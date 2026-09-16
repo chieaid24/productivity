@@ -47,6 +47,9 @@ UT_BuildMenu(m) {
     m.Add("Open full pages", (*) => UT_OpenFullPages())
     m.Add()
     m.Add("Settings...", UT_OpenSettings)
+    if !SuiteServiceEnabled("UsageTracker")
+        for item in ["Show usage", "Close usage", "Refresh usage", "Open full pages"]
+            m.Disable(item)
 }
 
 UT_SetEnabled(on) {

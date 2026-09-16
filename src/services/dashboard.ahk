@@ -42,6 +42,9 @@ MD_BuildMenu(m) {
     m.Add("Toggle dashboard", (*) => MD_Guard(MD_Toggle))
     m.Add()
     m.Add("Settings...", (*) => SuiteOpenConfig())
+    if !SuiteServiceEnabled("Dashboard")
+        for item in ["Open dashboard", "Close dashboard", "Toggle dashboard"]
+            m.Disable(item)
 }
 
 MD_SetEnabled(on) {

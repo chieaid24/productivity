@@ -8,13 +8,14 @@ global PT_Running := false
 global PT_NextTrigger := ""      ; UTC yyyyMMddHHmmss while scheduled
 global PT_PendingNext := ""      ; kept across a pause
 global PT_LastTriggered := ""
-global PT_MenuLabel := "Pause reminders"
 global PT_MenuRef := 0
 global PT_SettingsGui := 0
 
 PT_BuildMenu(m) {
     global PT_MenuRef := m
-    m.Add(PT_MenuLabel, (*) => PT_Toggle())
+    m.Add("Enabled", (*) => PT_Toggle())
+    if SuiteServiceEnabled("Timer")
+        m.Check("Enabled")
     m.Add()
     m.Add("Settings...", PT_OpenSettings)
 }
@@ -119,12 +120,12 @@ PT_Notify() {
 }
 
 PT_UpdateUi() {
-    global PT_MenuLabel
-    label := PT_Running ? "Pause reminders" : "Resume reminders"
-    if label != PT_MenuLabel {
-        if PT_MenuRef
-            try PT_MenuRef.Rename(PT_MenuLabel, label)
-        PT_MenuLabel := label
+    if PT_MenuRef {
+        if PT_Running {
+            try PT_MenuRef.Check("Enabled")
+        } else {
+            try PT_MenuRef.Uncheck("Enabled")
+        }
     }
     icon := SuiteRoot "\assets\" (PT_Running ? "productivity-running.ico" : "productivity-paused.ico")
     try TraySetIcon(icon, , true)
