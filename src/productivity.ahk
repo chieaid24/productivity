@@ -24,12 +24,25 @@ Persistent
 try DllCall("shell32\SetCurrentProcessExplicitAppUserModelID", "wstr", PT_AppId)
 
 SuiteSetupTray()
+OnMessage 0x404, SuiteTrayClick  ; AHK_NOTIFYICON
 PT_Init()
 MD_Init()
 FS_Init()
 UT_Init()
 SuiteHandleArgs()
 return
+
+; Left-clicking the tray icon toggles reminders, like the original
+; Productivity Timer. Debounced so a double-click does not toggle twice.
+SuiteTrayClick(wParam, lParam, msg, hwnd) {
+    static lastToggle := 0
+    if lParam != 0x202  ; WM_LBUTTONUP
+        return
+    if A_TickCount - lastToggle < 500
+        return
+    lastToggle := A_TickCount
+    PT_Toggle()
+}
 
 ; -------------------------------------------------------------------- tray
 
