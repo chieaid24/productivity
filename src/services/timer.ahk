@@ -128,7 +128,7 @@ PT_UpdateUi() {
         }
     }
     icon := SuiteRoot "\assets\" (PT_Running ? "productivity-running.ico" : "productivity-paused.ico")
-    try TraySetIcon(icon, , true)
+    try TraySetIcon(icon)
     last := FormatMoment(PT_LastTriggered, "never")
     next := PT_Running ? FormatMoment(PT_NextTrigger, "paused") : "paused"
     A_IconTip := "Productivity`nLast: " last "`nNext: " next
