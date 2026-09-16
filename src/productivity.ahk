@@ -36,13 +36,12 @@ return
 SuiteSetupTray() {
     tray := A_TrayMenu
     tray.Delete()
-    tray.Add("Pause reminders", (*) => PT_Toggle())
-    tray.Add("Timer settings...", PT_OpenSettings)
-    tray.Add()
-    mdMenu := Menu(), fsMenu := Menu(), utMenu := Menu()
+    ptMenu := Menu(), mdMenu := Menu(), fsMenu := Menu(), utMenu := Menu()
+    PT_BuildMenu(ptMenu)
     MD_BuildMenu(mdMenu)
     FS_BuildMenu(fsMenu)
     UT_BuildMenu(utMenu)
+    tray.Add("Productivity Timer", ptMenu)
     tray.Add("Morning Dashboard", mdMenu)
     tray.Add("Focus Switcher", fsMenu)
     tray.Add("CC Usage Tracker", utMenu)
@@ -50,7 +49,6 @@ SuiteSetupTray() {
     tray.Add("Open config file", (*) => SuiteOpenConfig())
     tray.Add("Reload", (*) => Reload())
     tray.Add("Exit (until next login)", (*) => ExitApp())
-    tray.Default := "Pause reminders"
 }
 
 ; ---------------------------------------------------------------- services
