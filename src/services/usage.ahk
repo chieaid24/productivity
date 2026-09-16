@@ -33,7 +33,7 @@ UT_Disable() {
 
 UT_BuildMenu(m) {
     global UT_MenuRef := m
-    hint := "Hotkey: " HotkeyLabel(UT_Hotkey())
+    hint := HotkeyLabel(UT_Hotkey())
     m.Add(hint, (*) => "")
     m.Disable(hint)
     m.Add()
