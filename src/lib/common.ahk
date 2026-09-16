@@ -229,6 +229,27 @@ UtcToLocal(utcStamp) {
     return DateAdd(utcStamp, offset, "Seconds")
 }
 
+; Human-readable label for an AutoHotkey hotkey string, e.g. ^!m -> Ctrl+Alt+M.
+HotkeyLabel(hk) {
+    label := ""
+    i := 1
+    while i <= StrLen(hk) {
+        c := SubStr(hk, i, 1)
+        switch c {
+            case "^": label .= "Ctrl+"
+            case "!": label .= "Alt+"
+            case "+": label .= "Shift+"
+            case "#": label .= "Win+"
+            case "<", ">", "*", "~", "$":  ; prefix modifiers with no display form
+            default:
+                key := SubStr(hk, i)
+                return label (StrLen(key) = 1 ? StrUpper(key) : key)
+        }
+        i++
+    }
+    return label
+}
+
 ; "today at HH:mm:ss" for same-day local moments, else full date.
 FormatMoment(utcStamp, missing) {
     if utcStamp = ""

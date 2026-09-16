@@ -38,6 +38,10 @@ FS_Disable() {
 
 FS_BuildMenu(m) {
     global FS_MenuRef := m
+    hint := "Hotkeys: " HotkeyLabel(FS_HotkeyLeft()) " / " HotkeyLabel(FS_HotkeyRight())
+    m.Add(hint, (*) => "")
+    m.Disable(hint)
+    m.Add()
     m.Add("Enabled", (*) => SuiteToggleService("FocusSwitcher"))
     if SuiteServiceEnabled("FocusSwitcher")
         m.Check("Enabled")

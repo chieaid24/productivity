@@ -33,6 +33,10 @@ UT_Disable() {
 
 UT_BuildMenu(m) {
     global UT_MenuRef := m
+    hint := "Hotkey: " HotkeyLabel(UT_Hotkey())
+    m.Add(hint, (*) => "")
+    m.Disable(hint)
+    m.Add()
     m.Add("Enabled", (*) => SuiteToggleService("UsageTracker"))
     if SuiteServiceEnabled("UsageTracker")
         m.Check("Enabled")

@@ -29,6 +29,10 @@ MD_Disable() {
 
 MD_BuildMenu(m) {
     global MD_MenuRef := m
+    hint := "Hotkey: " HotkeyLabel(MD_Hotkey())
+    m.Add(hint, (*) => "")
+    m.Disable(hint)
+    m.Add()
     m.Add("Enabled", (*) => SuiteToggleService("Dashboard"))
     if SuiteServiceEnabled("Dashboard")
         m.Check("Enabled")
