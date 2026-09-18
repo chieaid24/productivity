@@ -1,7 +1,9 @@
-; Morning Dashboard: Ctrl+Alt+M toggles a two-monitor layout - Outlook
-; maximized over a Gmail Brave window on the left monitor, Google Calendar
-; and a private schedule viewer split 50/50 on the right. Teardown closes
-; only windows the dashboard created and restores a borrowed Outlook.
+; Morning Dashboard: Ctrl+Alt+M toggles a two-monitor layout - a Brave
+; window (Todoist first, then Gmail) maximized over Outlook on the left
+; monitor, Google Calendar and a private schedule viewer split 50/50 on the
+; right, plus a minimized Chrome window holding a bookmarks folder parked on
+; the right. Teardown closes only windows the dashboard created and restores
+; a borrowed Outlook.
 
 global MD_Busy := false
 global MD_MenuRef := 0
@@ -167,14 +169,81 @@ MD_LaunchBraveWindow(args, titleNeedle) {
 
 ; ---------------------------------------------------------- dashboard parts
 
+; Todoist opens first so Chromium makes it the focused tab, then the Gmail
+; inboxes. Title needle tracks the active tab, so it becomes Todoist.
 MD_OpenGmailWindow() {
     args := "--new-window"
+    todoist := Cfg("Dashboard.Todoist", "Url")
+    if todoist != ""
+        args .= ' "' todoist '"'
     for key in ["Url1", "Url2", "Url3"] {
         url := Cfg("Dashboard.Gmail", key)
         if url != ""
             args .= ' "' url '"'
     }
-    return MD_LaunchBraveWindow(args, "Gmail")
+    return MD_LaunchBraveWindow(args, todoist != "" ? "Todoist" : "Gmail")
+}
+
+; Direct-child bookmark URLs of the first folder named `folderName` in the
+; given Chrome profile, searching the bookmark bar, other, then synced roots.
+MD_ChromeBookmarkUrls(profile, folderName) {
+    file := EnvGet("LOCALAPPDATA") "\Google\Chrome\User Data\" profile "\Bookmarks"
+    if !FileExist(file)
+        throw Error("Chrome bookmarks file not found: " file)
+    roots := JSON.Parse(FileRead(file, "UTF-8"))["roots"]
+    folder := 0
+    for key in ["bookmark_bar", "other", "synced"]
+        if roots.Has(key) && (folder := MD_FindBookmarkFolder(roots[key], folderName))
+            break
+    if !folder
+        throw Error("Bookmark folder not found: " folderName)
+    urls := []
+    for child in folder["children"]
+        if child.Has("type") && child["type"] = "url" && child.Has("url")
+            urls.Push(child["url"])
+    if !urls.Length
+        throw Error("Bookmark folder has no links: " folderName)
+    return urls
+}
+
+; Depth-first search for a folder node matching `name` (case-insensitive).
+MD_FindBookmarkFolder(node, name) {
+    if !(node is Map)
+        return 0
+    if node.Has("type") && node["type"] = "folder" && node.Has("name") && StrLower(node["name"]) = StrLower(name)
+        return node
+    if node.Has("children")
+        for child in node["children"]
+            if found := MD_FindBookmarkFolder(child, name)
+                return found
+    return 0
+}
+
+; Opens the configured bookmarks folder as tabs in a new Chrome window on the
+; user's chosen profile, then parks it maximized-then-minimized on the right
+; monitor so restoring it lands there without covering the split.
+MD_OpenBookmarksWindow(rightMon) {
+    profile := Cfg("Dashboard.Chrome", "ProfileDirectory", "Default")
+    folder := Cfg("Dashboard.Chrome", "BookmarkFolder")
+    if folder = ""
+        throw Error("Set [Dashboard.Chrome] BookmarkFolder in config.local.ini.")
+    urls := MD_ChromeBookmarkUrls(profile, folder)
+    chrome := LocateChrome(Cfg("Dashboard.Chrome", "Executable"))
+    if chrome = ""
+        throw Error("Google Chrome not found. Set [Dashboard.Chrome] Executable in config.local.ini.")
+    args := ""
+    for u in urls
+        args .= ' "' u '"'
+    before := SnapshotChromeWindows()
+    Run '"' chrome '" --profile-directory="' profile '" --new-window' args
+    hwnd := WaitNewChromeWindow(before)
+    if !hwnd
+        throw Error("New Chrome window did not appear.")
+    MonitorGetWorkArea(rightMon, &l, &t, &r, &b)
+    MoveWindowTo(hwnd, l, t, r - l, b - t)
+    try WinMaximize "ahk_id " hwnd
+    WinMinimize "ahk_id " hwnd
+    return hwnd
 }
 
 MD_OpenCalendarWindow() {
@@ -272,20 +341,21 @@ MD_PositionRightMonitor(mon, calHwnd, schedHwnd) {
     MoveWindowVisible(schedHwnd, l + half, t, w - half, h)
 }
 
-; Both maximized on the left monitor; Outlook on top, Gmail directly
-; beneath so closing Outlook reveals a full-monitor Gmail. Z-order is
-; enforced with SetWindowPos because WinActivate can be blocked by
-; foreground-lock when the user is interacting with another window.
+; Both maximized on the left monitor; the Brave window (Todoist + Gmail) on
+; top so tasks show first, Outlook directly beneath so closing Brave reveals
+; a full-monitor Outlook. Z-order is enforced with SetWindowPos because
+; WinActivate can be blocked by foreground-lock when the user is interacting
+; with another window.
 MD_StackLeftMonitor(mon, gmailHwnd, outlookHwnd) {
     MonitorGetWorkArea(mon, &l, &t, &r, &b)
-    MoveWindowTo(gmailHwnd, l, t, r - l, b - t)
-    WinMaximize "ahk_id " gmailHwnd
     MoveWindowTo(outlookHwnd, l, t, r - l, b - t)
     WinMaximize "ahk_id " outlookHwnd
-    try WinActivate "ahk_id " outlookHwnd
+    MoveWindowTo(gmailHwnd, l, t, r - l, b - t)
+    WinMaximize "ahk_id " gmailHwnd
+    try WinActivate "ahk_id " gmailHwnd
     flags := 0x1 | 0x2 | 0x10  ; SWP_NOSIZE | SWP_NOMOVE | SWP_NOACTIVATE
-    DllCall("SetWindowPos", "ptr", outlookHwnd, "ptr", 0, "int", 0, "int", 0, "int", 0, "int", 0, "uint", flags)
-    DllCall("SetWindowPos", "ptr", gmailHwnd, "ptr", outlookHwnd, "int", 0, "int", 0, "int", 0, "int", 0, "uint", flags)
+    DllCall("SetWindowPos", "ptr", gmailHwnd, "ptr", 0, "int", 0, "int", 0, "int", 0, "int", 0, "uint", flags)
+    DllCall("SetWindowPos", "ptr", outlookHwnd, "ptr", gmailHwnd, "int", 0, "int", 0, "int", 0, "int", 0, "uint", flags)
 }
 
 ; ------------------------------------------------------------- open / close
@@ -310,6 +380,8 @@ MD_Open() {
         created.Push(cal)
         sched := MD_OpenScheduleWindow()
         created.Push(sched)
+        chromeBk := MD_OpenBookmarksWindow(rightMon)
+        created.Push(chromeBk)
         outlook := MD_AcquireOutlook(&owned, &px, &py, &pw, &ph, &pmm)
         if owned
             created.Push(outlook)
@@ -320,6 +392,7 @@ MD_Open() {
         MD_StateSet("GmailHwnd", gmail)
         MD_StateSet("CalendarHwnd", cal)
         MD_StateSet("ScheduleHwnd", sched)
+        MD_StateSet("ChromeHwnd", chromeBk)
         MD_StateSet("OutlookHwnd", outlook)
         MD_StateSet("OutlookOwned", owned ? "1" : "0")
         MD_StateSet("OutlookPrevX", px)
@@ -331,7 +404,7 @@ MD_Open() {
         TrayTip "Morning Dashboard opened.", "Morning Dashboard"
     } catch as err {
         for hwnd in created
-            SafeCloseWindow(hwnd, ["brave.exe", "olk.exe", "OUTLOOK.EXE"])
+            SafeCloseWindow(hwnd, ["brave.exe", "chrome.exe", "olk.exe", "OUTLOOK.EXE"])
         if outlook && !owned
             MD_RestoreOutlook(outlook, px, py, pw, ph, pmm)
         MD_StateClear()
@@ -349,6 +422,7 @@ MD_Close() {
     SafeCloseWindow(MD_StateInt("ScheduleHwnd"), ["brave.exe"])
     SafeCloseWindow(MD_StateInt("CalendarHwnd"), ["brave.exe"])
     SafeCloseWindow(MD_StateInt("GmailHwnd"), ["brave.exe"])
+    SafeCloseWindow(MD_StateInt("ChromeHwnd"), ["chrome.exe"])
 
     outlook := MD_StateInt("OutlookHwnd")
     if MD_State("OutlookOwned", "0") = "1"

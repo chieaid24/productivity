@@ -14,6 +14,7 @@ SplitPath A_ScriptDir, , &suiteRoot
 global SuiteRoot := suiteRoot
 
 #Include lib\common.ahk
+#Include lib\json.ahk
 #Include lib\toast.ahk
 #Include services\timer.ahk
 #Include services\dashboard.ahk

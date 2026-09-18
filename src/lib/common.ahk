@@ -219,6 +219,81 @@ FileUrl(path) {
     return SubStr(p, 1, 2) = "//" ? "file:" p : "file:///" p
 }
 
+; ---------------------------------------------------------- chrome helpers
+
+IsChromeExe(path) {
+    if path = "" || !FileExist(path)
+        return false
+    SplitPath path, &name
+    return StrLower(name) = "chrome.exe"
+}
+
+; Override path first, then common install dirs, then App Paths registry.
+LocateChrome(override := "") {
+    if IsChromeExe(override)
+        return override
+    for p in [EnvGet("LOCALAPPDATA") "\Google\Chrome\Application\chrome.exe",
+              EnvGet("ProgramFiles") "\Google\Chrome\Application\chrome.exe",
+              EnvGet("ProgramFiles(x86)") "\Google\Chrome\Application\chrome.exe"]
+        if IsChromeExe(p)
+            return p
+    for key in ["SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\chrome.exe",
+                "SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\App Paths\chrome.exe"]
+        for hive in ["HKCU", "HKLM"] {
+            p := ""
+            try p := RegRead(hive "\" key)
+            if IsChromeExe(p)
+                return p
+        }
+    return ""
+}
+
+; Visible, unowned top-level chrome.exe windows; preferred = the main
+; Chrome_WidgetWin_1 class. PIDs cannot identify Chromium windows because
+; the browser shares processes across windows.
+ChromeWindowCandidates() {
+    out := []
+    for hwnd in WinGetList("ahk_exe chrome.exe") {
+        if DllCall("GetWindow", "ptr", hwnd, "uint", 4, "ptr")  ; GW_OWNER
+            continue
+        rect := Buffer(16, 0)
+        if !DllCall("GetWindowRect", "ptr", hwnd, "ptr", rect)
+            continue
+        if NumGet(rect, 8, "int") <= NumGet(rect, 0, "int") || NumGet(rect, 12, "int") <= NumGet(rect, 4, "int")
+            continue
+        out.Push({hwnd: hwnd, preferred: WindowHasClass(hwnd, "Chrome_WidgetWin_1")})
+    }
+    return out
+}
+
+SnapshotChromeWindows() {
+    seen := Map()
+    for c in ChromeWindowCandidates()
+        seen[c.hwnd] := true
+    return seen
+}
+
+; First candidate window that appeared after a launch, preferring the main
+; class. 0 on timeout.
+WaitNewChromeWindow(before, timeoutMs := 15000) {
+    deadline := A_TickCount + timeoutMs
+    while A_TickCount < deadline {
+        fallback := 0
+        for c in ChromeWindowCandidates() {
+            if before.Has(c.hwnd)
+                continue
+            if c.preferred
+                return c.hwnd
+            if !fallback
+                fallback := c.hwnd
+        }
+        if fallback
+            return fallback
+        Sleep 100
+    }
+    return 0
+}
+
 ; UTC "yyyyMMddHHmmss" timestamps; AHK date math handles the rest.
 UtcNow() {
     return A_NowUTC

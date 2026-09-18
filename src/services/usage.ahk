@@ -176,83 +176,21 @@ UT_EscActive(*) {
 
 ; ------------------------------------------------------------------- chrome
 
-; Override path first, then common install dirs, then App Paths, exactly
-; like the C# ChromeLocator.
 UT_LocateChrome() {
-    override := Cfg("UsageTracker", "ChromeExecutable")
-    if UT_IsChromeExe(override)
-        return override
-    candidates := [
-        EnvGet("LOCALAPPDATA") "\Google\Chrome\Application\chrome.exe",
-        EnvGet("ProgramFiles") "\Google\Chrome\Application\chrome.exe",
-        EnvGet("ProgramFiles(x86)") "\Google\Chrome\Application\chrome.exe"
-    ]
-    for p in candidates
-        if UT_IsChromeExe(p)
-            return p
-    for key in ["SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\chrome.exe",
-                "SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\App Paths\chrome.exe"] {
-        for hive in ["HKCU", "HKLM"] {
-            p := ""
-            try p := RegRead(hive "\" key)
-            if UT_IsChromeExe(p)
-                return p
-        }
-    }
-    return ""
+    return LocateChrome(Cfg("UsageTracker", "ChromeExecutable"))
 }
 
 UT_IsChromeExe(path) {
-    if path = "" || !FileExist(path)
-        return false
-    SplitPath path, &name
-    return StrLower(name) = "chrome.exe"
-}
-
-; New-window detection by diffing visible, unowned top-level chrome.exe
-; windows, preferring class Chrome_WidgetWin_1. PIDs cannot identify
-; Chromium windows because processes are shared.
-UT_SnapshotChrome() {
-    seen := Map()
-    for hwnd in UT_ChromeCandidates()
-        seen[hwnd.hwnd] := true
-    return seen
-}
-
-UT_ChromeCandidates() {
-    out := []
-    for hwnd in WinGetList("ahk_exe chrome.exe") {
-        if DllCall("GetWindow", "ptr", hwnd, "uint", 4, "ptr")  ; GW_OWNER
-            continue
-        rect := Buffer(16, 0)
-        if !DllCall("GetWindowRect", "ptr", hwnd, "ptr", rect)
-            continue
-        if NumGet(rect, 8, "int") <= NumGet(rect, 0, "int") || NumGet(rect, 12, "int") <= NumGet(rect, 4, "int")
-            continue
-        out.Push({hwnd: hwnd, preferred: WindowHasClass(hwnd, "Chrome_WidgetWin_1")})
-    }
-    return out
+    return IsChromeExe(path)
 }
 
 UT_LaunchAppWindow(chrome, url) {
-    before := UT_SnapshotChrome()
+    before := SnapshotChromeWindows()
     Run '"' chrome '" --app="' url '"'
-    deadline := A_TickCount + 15000
-    while A_TickCount < deadline {
-        fallback := 0
-        for cand in UT_ChromeCandidates() {
-            if before.Has(cand.hwnd)
-                continue
-            if cand.preferred
-                return cand.hwnd
-            if !fallback
-                fallback := cand.hwnd
-        }
-        if fallback
-            return fallback
-        Sleep 100
-    }
-    throw Error("Chrome opened, but its app window could not be identified.")
+    hwnd := WaitNewChromeWindow(before)
+    if !hwnd
+        throw Error("Chrome opened, but its app window could not be identified.")
+    return hwnd
 }
 
 ; ------------------------------------------------------------------- layout
