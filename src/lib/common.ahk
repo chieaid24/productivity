@@ -219,6 +219,25 @@ FileUrl(path) {
     return SubStr(p, 1, 2) = "//" ? "file:" p : "file:///" p
 }
 
+; Percent-encodes a string for use as a URI component: the RFC 3986
+; unreserved set stays literal, everything else is encoded from its UTF-8
+; bytes so non-ASCII path characters survive a round trip.
+UriEncode(s) {
+    static safe := "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_.~"
+    size := StrPut(s, "UTF-8")
+    buf := Buffer(size)
+    StrPut(s, buf, "UTF-8")
+    out := ""
+    loop size - 1 {  ; skip the trailing NUL
+        b := NumGet(buf, A_Index - 1, "UChar")
+        if b < 128 && InStr(safe, Chr(b), true)
+            out .= Chr(b)
+        else
+            out .= Format("%{:02X}", b)
+    }
+    return out
+}
+
 ; ---------------------------------------------------------- chrome helpers
 
 IsChromeExe(path) {

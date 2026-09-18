@@ -26,6 +26,11 @@
   </style>
 </head>
 <body>
-  <img src="../.private/WEEKLY%20SCHEDULE.jpg" alt="Weekly schedule">
+  <img id="schedule" alt="Weekly schedule">
+  <script>
+    // Image path is passed by the dashboard as ?img=<encoded file url>.
+    const img = new URLSearchParams(location.search).get("img");
+    document.getElementById("schedule").src = img || "../.private/WEEKLY%20SCHEDULE.jpg";
+  </script>
 </body>
 </html>

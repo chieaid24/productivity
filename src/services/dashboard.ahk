@@ -7,6 +7,7 @@
 
 global MD_Busy := false
 global MD_MenuRef := 0
+global MD_SettingsGui := 0
 
 MD_Init() {
     GroupAdd "MD_Outlook", "ahk_exe olk.exe"
@@ -43,7 +44,7 @@ MD_BuildMenu(m) {
     m.Add("Close dashboard", (*) => MD_Guard(MD_Close))
     m.Add("Toggle dashboard", (*) => MD_Guard(MD_Toggle))
     m.Add()
-    m.Add("Settings...", (*) => SuiteOpenConfig())
+    m.Add("Settings...", MD_OpenSettings)
     if !SuiteServiceEnabled("Dashboard")
         for item in ["Open dashboard", "Close dashboard", "Toggle dashboard"]
             m.Disable(item)
@@ -255,10 +256,21 @@ MD_OpenScheduleWindow() {
     viewer := SuiteRoot "\" Cfg("Dashboard.Schedule", "Viewer", "viewer\schedule.html")
     if !FileExist(viewer)
         throw Error("Schedule viewer not found: " viewer)
-    img := SuiteRoot "\" Cfg("Dashboard.Schedule", "LocalImage", ".private\WEEKLY SCHEDULE.jpg")
+    img := MD_ScheduleImagePath()
     if !FileExist(img)
-        TrayTip "Schedule image missing. Run scripts\set-schedule-image.ps1.", "Morning Dashboard"
-    return MD_LaunchBraveWindow('--app="' FileUrl(viewer) '"', "Morning Dashboard Schedule")
+        TrayTip "Schedule image missing. Set it in Morning Dashboard > Settings.", "Morning Dashboard"
+    ; Viewer reads ?img=<encoded file url> and sets the picture from it.
+    url := FileUrl(viewer) "?img=" UriEncode(FileUrl(img))
+    return MD_LaunchBraveWindow('--app="' url '"', "Morning Dashboard Schedule")
+}
+
+; Configured schedule image resolved to a full path: absolute paths (drive
+; letter or UNC) are used as-is, anything else is relative to the app folder.
+MD_ScheduleImagePath() {
+    p := Cfg("Dashboard.Schedule", "LocalImage", ".private\WEEKLY SCHEDULE.jpg")
+    if RegExMatch(p, "^[A-Za-z]:[\\/]") || SubStr(p, 1, 2) = "\\"
+        return p
+    return SuiteRoot "\" p
 }
 
 ; Skips #32770 dialogs (reminders, error prompts) - only a real main window
@@ -435,4 +447,62 @@ MD_Close() {
 
     MD_StateClear()
     TrayTip "Morning Dashboard closed.", "Morning Dashboard"
+}
+
+; ------------------------------------------------------------ settings gui
+
+MD_OpenSettings(*) {
+    global MD_SettingsGui
+    if MD_SettingsGui {
+        try {
+            MD_SettingsGui.Show()  ; already built and open; just focus it
+            return
+        }
+        MD_SettingsGui := 0
+    }
+    g := Gui("+AlwaysOnTop -MinimizeBox", "Morning Dashboard settings")
+    g.SetFont("s10")
+    g.AddText("xm y+12 w110", "Schedule image")
+    edImage := g.AddEdit("x+8 yp-3 w330", Cfg("Dashboard.Schedule", "LocalImage", ".private\WEEKLY SCHEDULE.jpg"))
+    btnBrowse := g.AddButton("x+6 yp w76", "Browse...")
+    g.AddText("xm y+10 w440 cGray", "Absolute path, or relative to the app folder. Opens on the right monitor.")
+    btnConfig := g.AddButton("xm y+18 w150", "Open config file...")
+    btnSave := g.AddButton("x+96 yp w76 Default", "Save")
+    btnCancel := g.AddButton("x+8 yp w76", "Cancel")
+
+    btnBrowse.OnEvent("Click", (*) => MD_BrowseImage(edImage, g))
+    btnConfig.OnEvent("Click", (*) => SuiteOpenConfig())
+    btnSave.OnEvent("Click", (*) => MD_SaveSettings(g, edImage))
+    btnCancel.OnEvent("Click", (*) => MD_CloseSettings(g))
+    g.OnEvent("Close", (*) => MD_CloseSettings(g))
+    g.OnEvent("Escape", (*) => MD_CloseSettings(g))
+    g.Show()
+    MD_SettingsGui := g
+}
+
+MD_CloseSettings(g) {
+    global MD_SettingsGui := 0
+    try g.Destroy()
+}
+
+MD_BrowseImage(edImage, owner) {
+    owner.Opt("+OwnDialogs")
+    picked := FileSelect(1, , "Choose the schedule image", "Images (*.jpg; *.jpeg; *.png; *.gif; *.bmp; *.webp)")
+    if picked != ""
+        edImage.Value := picked
+}
+
+MD_SaveSettings(g, edImage) {
+    img := Trim(edImage.Value, " `t`r`n")
+    if img = "" {
+        MsgBox "Choose a schedule image.", "Could not save settings", "Iconx Owner" g.Hwnd
+        return
+    }
+    resolved := (RegExMatch(img, "^[A-Za-z]:[\\/]") || SubStr(img, 1, 2) = "\\") ? img : SuiteRoot "\" img
+    if !FileExist(resolved) {
+        MsgBox "That image file does not exist:`n" resolved, "Could not save settings", "Iconx Owner" g.Hwnd
+        return
+    }
+    CfgSet("Dashboard.Schedule", "LocalImage", img)
+    MD_CloseSettings(g)
 }
