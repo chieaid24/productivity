@@ -1,13 +1,17 @@
-; Morning Dashboard: Ctrl+Alt+M toggles a two-monitor layout - a Brave
-; window (Todoist first, then Gmail) maximized over Outlook on the left
-; monitor, Google Calendar and a private schedule viewer split 50/50 on the
-; right, plus a minimized Chrome window holding a bookmarks folder parked on
-; the right. Teardown closes only windows the dashboard created and restores
-; a borrowed Outlook.
+; Morning Dashboard: Ctrl+Alt+M toggles a Google-Calendar-centered layout.
+; Two monitors: a Brave window (Todoist first, then Gmail) maximized over
+; Outlook on the left monitor; Google Calendar (day view) beside a Google
+; Calendar tasks view split 50/50 on the right, plus a minimized Chrome
+; window holding a bookmarks folder parked on the right. One monitor: just
+; the calendar day view and the tasks view split 50/50. Teardown closes only
+; windows the dashboard created and restores a borrowed Outlook. Open state
+; is tracked in memory only, so a fresh process starts closed and stale
+; window handles never linger.
 
 global MD_Busy := false
 global MD_MenuRef := 0
-global MD_SettingsGui := 0
+global MD_OpenWindows := []     ; [{hwnd, exes}] created this session
+global MD_OutlookRestore := 0   ; {hwnd,x,y,w,h,mm} for a borrowed Outlook
 
 MD_Init() {
     GroupAdd "MD_Outlook", "ahk_exe olk.exe"
@@ -43,8 +47,6 @@ MD_BuildMenu(m) {
     m.Add("Open dashboard", (*) => MD_Guard(MD_Open))
     m.Add("Close dashboard", (*) => MD_Guard(MD_Close))
     m.Add("Toggle dashboard", (*) => MD_Guard(MD_Toggle))
-    m.Add()
-    m.Add("Settings...", MD_OpenSettings)
     if !SuiteServiceEnabled("Dashboard")
         for item in ["Open dashboard", "Close dashboard", "Toggle dashboard"]
             m.Disable(item)
@@ -84,31 +86,27 @@ MD_Toggle() {
 
 ; ------------------------------------------------------------ session state
 
-MD_State(key, default := "") {
-    return StateGet("dashboard.ini", key, default)
-}
-
-MD_StateInt(key) {
-    v := MD_State(key, "0")
-    return IsInteger(v) ? Integer(v) : 0
-}
-
-MD_StateSet(key, value) {
-    StateSet("dashboard.ini", key, value)
-}
-
-MD_StateClear() {
-    StateDelete("dashboard.ini")
-}
-
+; Open state is derived from the tracked windows, not a saved flag, so it
+; self-corrects when the user closes windows by hand or the app restarts.
 MD_Active() {
-    return MD_State("Active", "0") = "1"
+    global MD_OpenWindows
+    for w in MD_OpenWindows
+        if w.hwnd && WinExist("ahk_id " w.hwnd)
+            return true
+    return false
+}
+
+MD_Track(hwnd, exes) {
+    global MD_OpenWindows
+    if hwnd
+        MD_OpenWindows.Push({hwnd: hwnd, exes: exes})
 }
 
 ; ----------------------------------------------------------------- monitors
 
 ; Left = smallest work-area center X, right = largest. Coordinates can be
-; negative. [Dashboard.Monitors] overrides by AutoHotkey index.
+; negative. [Dashboard.Monitors] overrides by AutoHotkey index. Returns
+; false with a single monitor (or a config that collapses both to one).
 MD_PickMonitors(&leftMon, &rightMon) {
     count := MonitorGetCount()
     if count < 2
@@ -134,6 +132,12 @@ MD_PickMonitors(&leftMon, &rightMon) {
     if cfgR != "" && IsInteger(cfgR)
         rightMon := Integer(cfgR)
     return leftMon != rightMon
+}
+
+; The sole monitor to use when there is no distinct left/right pair.
+MD_SingleMonitor() {
+    m := MonitorGetPrimary()
+    return m ? m : 1
 }
 
 ; -------------------------------------------------------------------- brave
@@ -248,29 +252,13 @@ MD_OpenBookmarksWindow(rightMon) {
 }
 
 MD_OpenCalendarWindow() {
-    url := Cfg("Dashboard.Calendar", "Url", "https://calendar.google.com/calendar/u/0/r")
+    url := Cfg("Dashboard.Calendar", "Url", "https://calendar.google.com/calendar/u/0/r/day")
     return MD_LaunchBraveWindow('--app="' url '"', "Calendar")
 }
 
-MD_OpenScheduleWindow() {
-    viewer := SuiteRoot "\" Cfg("Dashboard.Schedule", "Viewer", "viewer\schedule.html")
-    if !FileExist(viewer)
-        throw Error("Schedule viewer not found: " viewer)
-    img := MD_ScheduleImagePath()
-    if !FileExist(img)
-        TrayTip "Schedule image missing. Set it in Morning Dashboard > Settings.", "Morning Dashboard"
-    ; Viewer reads ?img=<encoded file url> and sets the picture from it.
-    url := FileUrl(viewer) "?img=" UriEncode(FileUrl(img))
-    return MD_LaunchBraveWindow('--app="' url '"', "Morning Dashboard Schedule")
-}
-
-; Configured schedule image resolved to a full path: absolute paths (drive
-; letter or UNC) are used as-is, anything else is relative to the app folder.
-MD_ScheduleImagePath() {
-    p := Cfg("Dashboard.Schedule", "LocalImage", ".private\WEEKLY SCHEDULE.jpg")
-    if RegExMatch(p, "^[A-Za-z]:[\\/]") || SubStr(p, 1, 2) = "\\"
-        return p
-    return SuiteRoot "\" p
+MD_OpenTasksWindow() {
+    url := Cfg("Dashboard.Tasks", "Url", "https://calendar.google.com/calendar/u/0/r/tasks")
+    return MD_LaunchBraveWindow('--app="' url '"', "Tasks")
 }
 
 ; Skips #32770 dialogs (reminders, error prompts) - only a real main window
@@ -326,6 +314,20 @@ MD_AcquireOutlook(&owned, &px, &py, &pw, &ph, &pmm) {
     return hwnd
 }
 
+; Acquires Outlook and records how teardown should treat it: an owned window
+; is tracked for closing, a borrowed one is remembered for restore.
+MD_AcquireOutlookTracked() {
+    global MD_OutlookRestore
+    owned := false
+    px := py := pw := ph := pmm := 0
+    hwnd := MD_AcquireOutlook(&owned, &px, &py, &pw, &ph, &pmm)
+    if owned
+        MD_Track(hwnd, ["olk.exe", "OUTLOOK.EXE"])
+    else
+        MD_OutlookRestore := {hwnd: hwnd, x: px, y: py, w: pw, h: ph, mm: pmm}
+    return hwnd
+}
+
 MD_RestoreOutlook(hwnd, x, y, w, h, mm) {
     if !hwnd || !WinExist("ahk_id " hwnd)
         return
@@ -346,11 +348,11 @@ MD_RestoreOutlook(hwnd, x, y, w, h, mm) {
 
 ; ------------------------------------------------------------------- layout
 
-MD_PositionRightMonitor(mon, calHwnd, schedHwnd) {
+MD_PositionRightMonitor(mon, calHwnd, tasksHwnd) {
     MonitorGetWorkArea(mon, &l, &t, &r, &b)
     w := r - l, h := b - t, half := w // 2
     MoveWindowVisible(calHwnd, l, t, half, h)
-    MoveWindowVisible(schedHwnd, l + half, t, w - half, h)
+    MoveWindowVisible(tasksHwnd, l + half, t, w - half, h)
 }
 
 ; Both maximized on the left monitor; the Brave window (Todoist + Gmail) on
@@ -377,132 +379,65 @@ MD_Open() {
         TrayTip "Dashboard is already open.", "Morning Dashboard"
         return
     }
-    if !MD_PickMonitors(&leftMon, &rightMon) {
-        TrayTip "Two monitors are required for the Morning Dashboard.", "Morning Dashboard"
-        return
-    }
-    created := []
-    outlook := 0
-    owned := true
-    px := py := pw := ph := pmm := 0
+    global MD_OpenWindows := []
+    global MD_OutlookRestore := 0
     try {
-        gmail := MD_OpenGmailWindow()
-        created.Push(gmail)
-        cal := MD_OpenCalendarWindow()
-        created.Push(cal)
-        sched := MD_OpenScheduleWindow()
-        created.Push(sched)
-        chromeBk := MD_OpenBookmarksWindow(rightMon)
-        created.Push(chromeBk)
-        outlook := MD_AcquireOutlook(&owned, &px, &py, &pw, &ph, &pmm)
-        if owned
-            created.Push(outlook)
-
-        MD_PositionRightMonitor(rightMon, cal, sched)
-        MD_StackLeftMonitor(leftMon, gmail, outlook)
-
-        MD_StateSet("GmailHwnd", gmail)
-        MD_StateSet("CalendarHwnd", cal)
-        MD_StateSet("ScheduleHwnd", sched)
-        MD_StateSet("ChromeHwnd", chromeBk)
-        MD_StateSet("OutlookHwnd", outlook)
-        MD_StateSet("OutlookOwned", owned ? "1" : "0")
-        MD_StateSet("OutlookPrevX", px)
-        MD_StateSet("OutlookPrevY", py)
-        MD_StateSet("OutlookPrevW", pw)
-        MD_StateSet("OutlookPrevH", ph)
-        MD_StateSet("OutlookPrevMinMax", pmm)
-        MD_StateSet("Active", "1")
+        if MD_PickMonitors(&leftMon, &rightMon)
+            MD_BuildTwoMonitor(leftMon, rightMon)
+        else
+            MD_BuildOneMonitor()
         TrayTip "Morning Dashboard opened.", "Morning Dashboard"
     } catch as err {
-        for hwnd in created
-            SafeCloseWindow(hwnd, ["brave.exe", "chrome.exe", "olk.exe", "OUTLOOK.EXE"])
-        if outlook && !owned
-            MD_RestoreOutlook(outlook, px, py, pw, ph, pmm)
-        MD_StateClear()
+        MD_Teardown()
         SuiteLog("dashboard: open failed: " err.Message " (" err.What ", line " err.Line ")")
         TrayTip "Dashboard failed to open: " err.Message, "Morning Dashboard"
     }
 }
 
-; Closes only tracked dashboard windows; skips any the user already closed.
+; Two monitors: Todoist+Gmail over Outlook on the left; calendar day view
+; and tasks split on the right; bookmarks parked minimized on the right.
+MD_BuildTwoMonitor(leftMon, rightMon) {
+    gmail := MD_OpenGmailWindow()
+    MD_Track(gmail, ["brave.exe"])
+    cal := MD_OpenCalendarWindow()
+    MD_Track(cal, ["brave.exe"])
+    tasks := MD_OpenTasksWindow()
+    MD_Track(tasks, ["brave.exe"])
+    MD_Track(MD_OpenBookmarksWindow(rightMon), ["chrome.exe"])
+    outlook := MD_AcquireOutlookTracked()
+    MD_PositionRightMonitor(rightMon, cal, tasks)
+    MD_StackLeftMonitor(leftMon, gmail, outlook)
+}
+
+; One monitor: calendar day view on the left half, tasks view on the right.
+MD_BuildOneMonitor() {
+    mon := MD_SingleMonitor()
+    cal := MD_OpenCalendarWindow()
+    MD_Track(cal, ["brave.exe"])
+    tasks := MD_OpenTasksWindow()
+    MD_Track(tasks, ["brave.exe"])
+    MonitorGetWorkArea(mon, &l, &t, &r, &b)
+    w := r - l, h := b - t, half := w // 2
+    MoveWindowVisible(cal, l, t, half, h)
+    MoveWindowVisible(tasks, l + half, t, w - half, h)
+}
+
+; Closes only tracked dashboard windows (skipping any the user already
+; closed) and restores a borrowed Outlook. Safe when nothing is tracked.
+MD_Teardown() {
+    global MD_OpenWindows, MD_OutlookRestore
+    for w in MD_OpenWindows
+        SafeCloseWindow(w.hwnd, w.exes)
+    if MD_OutlookRestore
+        MD_RestoreOutlook(MD_OutlookRestore.hwnd, MD_OutlookRestore.x
+            , MD_OutlookRestore.y, MD_OutlookRestore.w
+            , MD_OutlookRestore.h, MD_OutlookRestore.mm)
+    MD_OpenWindows := []
+    MD_OutlookRestore := 0
+}
+
 MD_Close() {
-    if !MD_Active() {
-        TrayTip "Dashboard is not open.", "Morning Dashboard"
-        return
-    }
-    SafeCloseWindow(MD_StateInt("ScheduleHwnd"), ["brave.exe"])
-    SafeCloseWindow(MD_StateInt("CalendarHwnd"), ["brave.exe"])
-    SafeCloseWindow(MD_StateInt("GmailHwnd"), ["brave.exe"])
-    SafeCloseWindow(MD_StateInt("ChromeHwnd"), ["chrome.exe"])
-
-    outlook := MD_StateInt("OutlookHwnd")
-    if MD_State("OutlookOwned", "0") = "1"
-        SafeCloseWindow(outlook, ["olk.exe", "OUTLOOK.EXE"])
-    else
-        MD_RestoreOutlook(outlook
-            , MD_StateInt("OutlookPrevX"), MD_StateInt("OutlookPrevY")
-            , MD_StateInt("OutlookPrevW"), MD_StateInt("OutlookPrevH")
-            , MD_StateInt("OutlookPrevMinMax"))
-
-    MD_StateClear()
-    TrayTip "Morning Dashboard closed.", "Morning Dashboard"
-}
-
-; ------------------------------------------------------------ settings gui
-
-MD_OpenSettings(*) {
-    global MD_SettingsGui
-    if MD_SettingsGui {
-        try {
-            MD_SettingsGui.Show()  ; already built and open; just focus it
-            return
-        }
-        MD_SettingsGui := 0
-    }
-    g := Gui("+AlwaysOnTop -MinimizeBox", "Morning Dashboard settings")
-    g.SetFont("s10")
-    g.AddText("xm y+12 w110", "Schedule image")
-    edImage := g.AddEdit("x+8 yp-3 w330", Cfg("Dashboard.Schedule", "LocalImage", ".private\WEEKLY SCHEDULE.jpg"))
-    btnBrowse := g.AddButton("x+6 yp w76", "Browse...")
-    g.AddText("xm y+10 w440 cGray", "Absolute path, or relative to the app folder. Opens on the right monitor.")
-    btnConfig := g.AddButton("xm y+18 w150", "Open config file...")
-    btnSave := g.AddButton("x+96 yp w76 Default", "Save")
-    btnCancel := g.AddButton("x+8 yp w76", "Cancel")
-
-    btnBrowse.OnEvent("Click", (*) => MD_BrowseImage(edImage, g))
-    btnConfig.OnEvent("Click", (*) => SuiteOpenConfig())
-    btnSave.OnEvent("Click", (*) => MD_SaveSettings(g, edImage))
-    btnCancel.OnEvent("Click", (*) => MD_CloseSettings(g))
-    g.OnEvent("Close", (*) => MD_CloseSettings(g))
-    g.OnEvent("Escape", (*) => MD_CloseSettings(g))
-    g.Show()
-    MD_SettingsGui := g
-}
-
-MD_CloseSettings(g) {
-    global MD_SettingsGui := 0
-    try g.Destroy()
-}
-
-MD_BrowseImage(edImage, owner) {
-    owner.Opt("+OwnDialogs")
-    picked := FileSelect(1, , "Choose the schedule image", "Images (*.jpg; *.jpeg; *.png; *.gif; *.bmp; *.webp)")
-    if picked != ""
-        edImage.Value := picked
-}
-
-MD_SaveSettings(g, edImage) {
-    img := Trim(edImage.Value, " `t`r`n")
-    if img = "" {
-        MsgBox "Choose a schedule image.", "Could not save settings", "Iconx Owner" g.Hwnd
-        return
-    }
-    resolved := (RegExMatch(img, "^[A-Za-z]:[\\/]") || SubStr(img, 1, 2) = "\\") ? img : SuiteRoot "\" img
-    if !FileExist(resolved) {
-        MsgBox "That image file does not exist:`n" resolved, "Could not save settings", "Iconx Owner" g.Hwnd
-        return
-    }
-    CfgSet("Dashboard.Schedule", "LocalImage", img)
-    MD_CloseSettings(g)
+    msg := MD_Active() ? "Morning Dashboard closed." : "Dashboard is not open."
+    MD_Teardown()
+    TrayTip msg, "Morning Dashboard"
 }
