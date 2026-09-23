@@ -1,7 +1,7 @@
 # Uninstalls Productivity: stops the daemon, removes the Startup entry,
-# launcher, toast registration, and runtime state. Keeps the private
-# schedule image unless -RemovePrivateData is given. Does not touch the
-# standalone apps this suite replaced.
+# launcher, toast registration, and runtime state. Keeps .private\ unless
+# -RemovePrivateData is given. Does not touch the standalone apps this
+# suite replaced.
 
 [CmdletBinding()]
 param(

@@ -5,11 +5,7 @@
 # Startup, and starts it. Idempotent.
 
 [CmdletBinding()]
-param(
-    # Absolute path to the private weekly schedule image. Copied (not moved)
-    # into .private\, which is never committed.
-    [string]$ScheduleImagePath
-)
+param()
 
 $ErrorActionPreference = 'Stop'
 $RepoRoot = Split-Path -Parent $PSScriptRoot
@@ -24,16 +20,6 @@ if (-not (Get-Command git -ErrorAction SilentlyContinue)) { throw 'Git is requir
 function Invoke-RepoGit([string[]]$GitArgs) {
     & git -C $RepoRoot @GitArgs *> $null
     return $LASTEXITCODE
-}
-
-function Test-PrivateIgnored {
-    $code = Invoke-RepoGit @('check-ignore', '-q', '--', '.private/probe')
-    if ($code -eq 0) { return $true }
-    if ($code -eq 1) { return $false }
-    Warn 'git could not inspect this checkout; falling back to reading .gitignore.'
-    $gi = Join-Path $RepoRoot '.gitignore'
-    if (-not (Test-Path $gi)) { return $false }
-    return [bool](Select-String -Path $gi -Pattern '^\s*\.private/\s*$' -Quiet)
 }
 
 function Find-AutoHotkey {
@@ -127,14 +113,13 @@ AppId=$newOutlookAppId
 [Dashboard.Calendar]
 Url=https://calendar.google.com/calendar/u/0/r/day
 
+[Dashboard.Tasks]
+Url=https://calendar.google.com/calendar/u/0/r/tasks
+
 [Dashboard.Gmail]
 Url1=https://mail.google.com/mail/u/1/#inbox
 Url2=https://mail.google.com/mail/u/0/#inbox
 Url3=https://mail.google.com/mail/u/2/#inbox
-
-[Dashboard.Schedule]
-LocalImage=.private\WEEKLY SCHEDULE.jpg
-Viewer=viewer\schedule.html
 
 [Dashboard.Monitors]
 LeftMonitor=
@@ -173,33 +158,12 @@ if ((Test-Path $timerState) -and -not (Test-Path $suiteTimerState)) {
     } catch { Warn 'Could not migrate the timer state; starting fresh.' }
 }
 
-# --- 4. Private schedule image ------------------------------------------------
-$privateDir = Join-Path $RepoRoot '.private'
-$destImage = Join-Path $privateDir 'WEEKLY SCHEDULE.jpg'
-if (-not (Test-Path (Join-Path $RepoRoot '.gitignore'))) { throw '.gitignore is missing; refusing to copy the private image.' }
-if (-not (Test-PrivateIgnored)) { throw '.private/ is not gitignored; refusing to copy the private image.' }
-if (-not $ScheduleImagePath) {
-    # Adopt the image from a sibling morning_dashboard checkout when present.
-    $sibling = Join-Path (Split-Path -Parent $RepoRoot) 'morning_dashboard\.private\WEEKLY SCHEDULE.jpg'
-    if ((-not (Test-Path $destImage)) -and (Test-Path $sibling)) { $ScheduleImagePath = $sibling }
-}
-if ($ScheduleImagePath) {
-    if (-not (Test-Path $ScheduleImagePath)) { throw "Schedule image not found: $ScheduleImagePath" }
-    New-Item -ItemType Directory -Force -Path $privateDir | Out-Null
-    Copy-Item -Path $ScheduleImagePath -Destination $destImage -Force
-    Step "Copied schedule image into .private\"
-} elseif (Test-Path $destImage) {
-    Step 'Schedule image already present in .private\'
-} else {
-    Warn 'No schedule image yet. Run: .\scripts\set-schedule-image.ps1 -Path "C:\path\to\schedule.jpg"'
-}
-
-# --- 5. Git hooks ---------------------------------------------------------------
+# --- 4. Git hooks ---------------------------------------------------------------
 Step 'Configuring repo-local git hooks'
 $code = Invoke-RepoGit @('config', 'core.hooksPath', '.githooks')
 if ($code -ne 0) { Warn 'Could not set core.hooksPath (git cannot use this checkout from Windows).' }
 
-# --- 6. Toast AUMID ---------------------------------------------------------------
+# --- 5. Toast AUMID ---------------------------------------------------------------
 Step 'Registering toast application id'
 $appDir = Join-Path $env:LOCALAPPDATA 'Productivity'
 New-Item -ItemType Directory -Force -Path $appDir | Out-Null
@@ -210,7 +174,7 @@ New-Item -Path $aumidKey -Force | Out-Null
 Set-ItemProperty -Path $aumidKey -Name DisplayName -Value 'Productivity'
 Set-ItemProperty -Path $aumidKey -Name IconUri -Value $iconLocal
 
-# --- 7. Retire the standalone apps ---------------------------------------------------
+# --- 6. Retire the standalone apps ---------------------------------------------------
 Step 'Retiring standalone app autostarts (binaries stay installed)'
 Get-Process ProductivityTimer, CCUsageTracker -ErrorAction SilentlyContinue | Stop-Process -Force
 Get-CimInstance Win32_Process -Filter "Name LIKE 'AutoHotkey%'" |
@@ -227,7 +191,7 @@ foreach ($lnk in 'Focus Switcher.lnk', 'Morning Dashboard.lnk') {
 }
 Remove-Item 'HKCU:\Software\Classes\AppUserModelId\Chieaid24.ProductivityTimer' -Force -ErrorAction SilentlyContinue
 
-# --- 8. Startup entry -------------------------------------------------------------
+# --- 7. Startup entry -------------------------------------------------------------
 Step 'Registering daemon in Startup'
 $script = Join-Path $RepoRoot 'src\productivity.ahk'
 $launcher = Join-Path $appDir 'launcher.ahk'
@@ -256,14 +220,14 @@ $lnk.Description = 'Productivity tray daemon'
 $lnk.Save()
 Step "Startup shortcut: $lnkPath"
 
-# --- 9. (Re)start daemon ------------------------------------------------------------
+# --- 8. (Re)start daemon ------------------------------------------------------------
 Step 'Starting daemon'
 Get-CimInstance Win32_Process -Filter "Name LIKE 'AutoHotkey%'" |
     Where-Object { $_.CommandLine -like '*productivity.ahk*' } |
     ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
 Start-Process -FilePath $ahk -ArgumentList ('"' + $script + '"')
 
-# --- 10. Privacy verification ---------------------------------------------------------
+# --- 9. Privacy verification ---------------------------------------------------------
 Step 'Running privacy verification'
 & (Join-Path $PSScriptRoot 'verify-privacy.ps1')
 if ($LASTEXITCODE -ne 0) { Warn 'Privacy verification reported problems; fix them before pushing.' }
