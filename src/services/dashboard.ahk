@@ -1,10 +1,12 @@
 ; Morning Dashboard: Ctrl+Alt+M toggles a Google-Calendar-centered layout.
-; Two monitors: a Brave window (Todoist first, then Gmail) maximized over
+; Two monitors: a Brave window with the three Gmail inboxes maximized over
 ; Outlook on the left monitor; Google Calendar (day view) beside a Google
 ; Calendar tasks view split 50/50 on the right, plus a minimized Chrome
-; window holding a bookmarks folder parked on the right. One monitor: just
-; the calendar day view and the tasks view split 50/50. Teardown closes only
-; windows the dashboard created and restores a borrowed Outlook. Open state
+; window holding a bookmarks folder parked on the right. One monitor: the
+; same windows on one screen, with the calendar day view and tasks view
+; split 50/50 in front of the maximized Gmail and Outlook. Teardown
+; closes only windows the dashboard created and restores a borrowed Outlook.
+; Open state
 ; is tracked in memory only, so a fresh process starts closed and stale
 ; window handles never linger.
 
@@ -174,19 +176,16 @@ MD_LaunchBraveWindow(args, titleNeedle) {
 
 ; ---------------------------------------------------------- dashboard parts
 
-; Todoist opens first so Chromium makes it the focused tab, then the Gmail
-; inboxes. Title needle tracks the active tab, so it becomes Todoist.
+; The three Gmail inboxes as tabs in one new Brave window, left to right;
+; Chromium focuses the first.
 MD_OpenGmailWindow() {
     args := "--new-window"
-    todoist := Cfg("Dashboard.Todoist", "Url")
-    if todoist != ""
-        args .= ' "' todoist '"'
     for key in ["Url1", "Url2", "Url3"] {
         url := Cfg("Dashboard.Gmail", key)
         if url != ""
             args .= ' "' url '"'
     }
-    return MD_LaunchBraveWindow(args, todoist != "" ? "Todoist" : "Gmail")
+    return MD_LaunchBraveWindow(args, "Gmail")
 }
 
 ; Direct-child bookmark URLs of the first folder named `folderName` in the
@@ -355,9 +354,27 @@ MD_PositionRightMonitor(mon, calHwnd, tasksHwnd) {
     MoveWindowVisible(tasksHwnd, l + half, t, w - half, h)
 }
 
-; Both maximized on the left monitor; the Brave window (Todoist + Gmail) on
-; top so tasks show first, Outlook directly beneath so closing Brave reveals
-; a full-monitor Outlook. Z-order is enforced with SetWindowPos because
+; Raises a window to the top of the z-order without moving, sizing, or
+; focusing it.
+MD_RaiseWindow(hwnd) {
+    if !hwnd || !WinExist("ahk_id " hwnd)
+        return
+    flags := 0x1 | 0x2 | 0x10  ; SWP_NOSIZE | SWP_NOMOVE | SWP_NOACTIVATE
+    DllCall("SetWindowPos", "ptr", hwnd, "ptr", 0, "int", 0, "int", 0, "int", 0, "int", 0, "uint", flags)
+}
+
+; Calendar and tasks split 50/50, raised above the maximized windows behind
+; them, with the calendar focused. Used on a single monitor.
+MD_SplitFront(mon, calHwnd, tasksHwnd) {
+    MD_PositionRightMonitor(mon, calHwnd, tasksHwnd)
+    MD_RaiseWindow(tasksHwnd)
+    MD_RaiseWindow(calHwnd)
+    try WinActivate "ahk_id " calHwnd
+}
+
+; Both maximized on the left monitor; the Gmail Brave window on top, Outlook
+; directly beneath so closing Brave reveals a full-monitor Outlook. Z-order
+; is enforced with SetWindowPos because
 ; WinActivate can be blocked by foreground-lock when the user is interacting
 ; with another window.
 MD_StackLeftMonitor(mon, gmailHwnd, outlookHwnd) {
@@ -394,8 +411,8 @@ MD_Open() {
     }
 }
 
-; Two monitors: Todoist+Gmail over Outlook on the left; calendar day view
-; and tasks split on the right; bookmarks parked minimized on the right.
+; Two monitors: Gmail over Outlook on the left; calendar day view and tasks
+; split on the right; bookmarks parked minimized on the right.
 MD_BuildTwoMonitor(leftMon, rightMon) {
     gmail := MD_OpenGmailWindow()
     MD_Track(gmail, ["brave.exe"])
@@ -409,17 +426,21 @@ MD_BuildTwoMonitor(leftMon, rightMon) {
     MD_StackLeftMonitor(leftMon, gmail, outlook)
 }
 
-; One monitor: calendar day view on the left half, tasks view on the right.
+; One monitor: the full set on one screen. Gmail over Outlook maximized
+; behind, calendar day view and tasks split 50/50 in front, bookmarks parked
+; minimized.
 MD_BuildOneMonitor() {
     mon := MD_SingleMonitor()
+    gmail := MD_OpenGmailWindow()
+    MD_Track(gmail, ["brave.exe"])
     cal := MD_OpenCalendarWindow()
     MD_Track(cal, ["brave.exe"])
     tasks := MD_OpenTasksWindow()
     MD_Track(tasks, ["brave.exe"])
-    MonitorGetWorkArea(mon, &l, &t, &r, &b)
-    w := r - l, h := b - t, half := w // 2
-    MoveWindowVisible(cal, l, t, half, h)
-    MoveWindowVisible(tasks, l + half, t, w - half, h)
+    MD_Track(MD_OpenBookmarksWindow(mon), ["chrome.exe"])
+    outlook := MD_AcquireOutlookTracked()
+    MD_StackLeftMonitor(mon, gmail, outlook)
+    MD_SplitFront(mon, cal, tasks)
 }
 
 ; Closes only tracked dashboard windows (skipping any the user already
