@@ -31,9 +31,9 @@ jobs:
           for f in src/productivity.ahk src/lib/common.ahk src/lib/toast.ahk \
                    src/services/timer.ahk src/services/dashboard.ahk \
                    src/services/focus.ahk src/services/usage.ahk \
-                   viewer/schedule.html config/config.example.ini \
+                   config/config.example.ini \
                    scripts/install.ps1 scripts/uninstall.ps1 \
-                   scripts/set-schedule-image.ps1 scripts/verify-privacy.ps1 \
+                   scripts/verify-privacy.ps1 \
                    assets/productivity-running.ico assets/productivity-paused.ico \
                    .githooks/pre-commit .gitignore LICENSE README.md; do
             test -f "$f" || { echo "missing: $f" >&2; exit 1; }
