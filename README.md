@@ -25,3 +25,5 @@ Requires Windows 11.
    ```powershell
    .\scripts\install.ps1
    ```
+
+3. Sign in once. The dashboard runs Brave and Chrome from their own data folders, so they start without your everyday logins. Press Ctrl+Alt+M, then sign in to your Google accounts in the Gmail window. Google numbers accounts in sign-in order, so sign in to the account that should be `/u/0` first, then `/u/1`, then `/u/2`. Sign in to any bookmarked sites that need it in the minimized Chrome window.

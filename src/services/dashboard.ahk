@@ -4,11 +4,11 @@
 ; Calendar tasks view split 50/50 on the right, plus a minimized Chrome
 ; window holding a bookmarks folder parked on the right. One monitor: the
 ; same windows on one screen, with the calendar day view and tasks view
-; split 50/50 in front of the maximized Gmail and Outlook. Teardown
-; closes only windows the dashboard created and restores a borrowed Outlook.
-; Open state
-; is tracked in memory only, so a fresh process starts closed and stale
-; window handles never linger.
+; split 50/50 in front of the maximized Gmail and Outlook. Brave and Chrome
+; run from dashboard-only data folders, so personal tabs never mix in.
+; Teardown closes only windows the dashboard created and restores a
+; borrowed Outlook. Open state is tracked in memory only, so a fresh
+; process starts closed and stale window handles never linger.
 
 global MD_Busy := false
 global MD_MenuRef := 0
@@ -162,16 +162,72 @@ MD_BraveExe() {
 ; after launch; Chromium shares processes, so PIDs cannot identify windows.
 MD_LaunchBraveWindow(args, titleNeedle) {
     before := SnapshotWindows("ahk_exe brave.exe")
-    cmd := '"' MD_BraveExe() '"'
-    prof := Cfg("Dashboard.Brave", "ProfileDirectory")
-    if prof != ""
-        cmd .= ' --profile-directory="' prof '"'
-    cmd .= " " args
-    Run cmd
+    Run MD_BrowserCommand(MD_BraveExe(), MD_DataDir("Brave")) " " args
     hwnd := WaitNewWindow("ahk_exe brave.exe", before, titleNeedle)
     if !hwnd
         throw Error("New Brave window did not appear (" titleNeedle ").")
     return hwnd
+}
+
+; ------------------------------------------------ dashboard browser data
+
+; Brave and Chrome open the dashboard from their own data folders, apart
+; from personal browsing, so a cold start cannot restore personal tabs.
+MD_DataDir(browser) {
+    return EnvGet("LOCALAPPDATA") "\Productivity\Dashboard\" browser
+}
+
+MD_BrowserCommand(exe, dataDir) {
+    return '"' exe '" --user-data-dir="' dataDir '" --no-first-run'
+        . " --no-default-browser-check --hide-crash-restore-bubble"
+}
+
+; Chromium holds <dir>\lockfile open while running and deletes it on exit.
+MD_DataDirInUse(dataDir) {
+    lock := dataDir "\lockfile"
+    if !FileExist(lock)
+        return false
+    try {
+        FileDelete lock  ; stale after a power loss
+        return false
+    }
+    return true
+}
+
+; Deletes the saved session of a stopped instance, so its next cold start
+; opens only the requested windows instead of also restoring the last
+; dashboard. A running instance opens clean new windows as it is.
+MD_PrepareDataDir(dataDir) {
+    deadline := A_TickCount + 5000  ; a just-closed dashboard may still be exiting
+    while MD_DataDirInUse(dataDir) {
+        if A_TickCount > deadline
+            return
+        Sleep 100
+    }
+    try DirDelete dataDir "\Default\Sessions", true
+}
+
+; A new Brave profile asks before closing multi-tab windows, which blocks
+; teardown, and shows an analytics notice bar. Seeds both off once.
+MD_SeedBraveDataDir(dataDir) {
+    if FileExist(dataDir "\Local State")
+        return
+    DirCreate dataDir "\Default"
+    MD_WriteFile(dataDir "\Local State", '{"brave":{"p3a":{"enabled":false,"notice_acknowledged":true}}}')
+    MD_WriteFile(dataDir "\Default\Preferences", '{"brave":{"enable_window_closing_confirm":false}}')
+}
+
+MD_WriteFile(path, text) {
+    f := FileOpen(path, "w", "UTF-8-RAW")
+    f.Write(text)
+    f.Close()
+}
+
+MD_PrepareBrowsers() {
+    brave := MD_DataDir("Brave")
+    MD_PrepareDataDir(brave)
+    MD_SeedBraveDataDir(brave)
+    MD_PrepareDataDir(MD_DataDir("Chrome"))
 }
 
 ; ---------------------------------------------------------- dashboard parts
@@ -223,14 +279,15 @@ MD_FindBookmarkFolder(node, name) {
     return 0
 }
 
-; Opens the configured bookmarks folder as tabs in a new Chrome window on the
-; user's chosen profile, then parks it maximized-then-minimized on the right
-; monitor so restoring it lands there without covering the split.
+; Opens the configured bookmarks folder, read from the user's chosen Chrome
+; profile, as tabs in a new window of the dashboard's Chrome, then parks it
+; maximized-then-minimized on the right monitor so restoring it lands there
+; without covering the split. Returns 0 when no folder is configured.
 MD_OpenBookmarksWindow(rightMon) {
     profile := Cfg("Dashboard.Chrome", "ProfileDirectory", "Default")
     folder := Cfg("Dashboard.Chrome", "BookmarkFolder")
     if folder = ""
-        throw Error("Set [Dashboard.Chrome] BookmarkFolder in config.local.ini.")
+        return 0
     urls := MD_ChromeBookmarkUrls(profile, folder)
     chrome := LocateChrome(Cfg("Dashboard.Chrome", "Executable"))
     if chrome = ""
@@ -239,7 +296,7 @@ MD_OpenBookmarksWindow(rightMon) {
     for u in urls
         args .= ' "' u '"'
     before := SnapshotChromeWindows()
-    Run '"' chrome '" --profile-directory="' profile '" --new-window' args
+    Run MD_BrowserCommand(chrome, MD_DataDir("Chrome")) " --new-window" args
     hwnd := WaitNewChromeWindow(before)
     if !hwnd
         throw Error("New Chrome window did not appear.")
@@ -399,6 +456,7 @@ MD_Open() {
     global MD_OpenWindows := []
     global MD_OutlookRestore := 0
     try {
+        MD_PrepareBrowsers()
         if MD_PickMonitors(&leftMon, &rightMon)
             MD_BuildTwoMonitor(leftMon, rightMon)
         else

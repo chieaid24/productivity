@@ -1,5 +1,6 @@
-# Uninstalls Productivity: stops the daemon, removes the Startup entry,
-# launcher, toast registration, and runtime state. Keeps .private\ unless
+# Uninstalls Productivity: stops the daemon and the dashboard's browsers,
+# removes the Startup entry, launcher, dashboard browser data, toast
+# registration, and runtime state. Keeps .private\ unless
 # -RemovePrivateData is given. Does not touch the standalone apps this
 # suite replaced.
 
@@ -18,7 +19,14 @@ Get-CimInstance Win32_Process -Filter "Name LIKE 'AutoHotkey%'" |
     Where-Object { $_.CommandLine -like '*productivity.ahk*' } |
     ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
 
-Step 'Removing Startup entry and launcher'
+Step 'Stopping dashboard browsers'
+$dashboardData = Join-Path $env:LOCALAPPDATA 'Productivity\Dashboard'
+$browsers = @(Get-CimInstance Win32_Process -Filter "Name = 'brave.exe' OR Name = 'chrome.exe'" |
+    Where-Object { $_.CommandLine -like "*$dashboardData*" })
+foreach ($p in $browsers) { Stop-Process -Id $p.ProcessId -Force -ErrorAction SilentlyContinue }
+if ($browsers) { Wait-Process -Id $browsers.ProcessId -Timeout 10 -ErrorAction SilentlyContinue }
+
+Step 'Removing Startup entry, launcher, and dashboard browser data'
 $lnkPath = Join-Path ([Environment]::GetFolderPath('Startup')) 'Productivity.lnk'
 if (Test-Path $lnkPath) { Remove-Item $lnkPath -Force }
 $appDir = Join-Path $env:LOCALAPPDATA 'Productivity'
