@@ -2,166 +2,101 @@
 ; Array for arrays, String for strings, Number for numbers, true/false for
 ; booleans, and "" for null. Throws on malformed input. Read-only: the suite
 ; only needs to parse Chrome's Bookmarks file, so there is no serializer.
+; Tokens are regex-matched in place; per-char SubStr on a property copied the text.
 
 class JSON {
-    static Parse(text) => JSONParser(text).Parse()
-}
-
-class JSONParser {
-    __New(text) {
-        this.s := text
-        this.i := 1
-        this.n := StrLen(text)
-    }
-
-    Parse() {
-        this.Ws()
-        v := this.Value()
-        this.Ws()
-        if this.i <= this.n
-            throw Error("JSON: trailing data at pos " this.i)
+    static Parse(text) {
+        pos := 1
+        v := JSON.Value(&text, &pos)
+        RegExMatch(text, "\G[ \t\n\r]*+", &m, pos)
+        if pos + m.Len <= StrLen(text)
+            throw Error("JSON: trailing data at pos " (pos + m.Len))
         return v
     }
 
-    Ws() {
-        while this.i <= this.n {
-            c := SubStr(this.s, this.i, 1)
-            if c = " " || c = "`t" || c = "`n" || c = "`r"
-                this.i++
-            else
-                break
+    static Value(&s, &pos) {
+        static re := 'S)\G[ \t\n\r]*+(?:\{(*MARK:o)|\[(*MARK:a)'
+            . '|"([^"\\]*+(?:\\.[^"\\]*+)*+)"(*MARK:s)'
+            . '|true(*MARK:t)|false(*MARK:f)|null(*MARK:n)'
+            . '|(-?(?:0|[1-9]\d*+)(?:\.\d++)?(?:[eE][+-]?\d++)?)(*MARK:d))'
+        if !RegExMatch(s, re, &m, pos)
+            throw Error("JSON: unexpected char at pos " pos)
+        pos += m.Len
+        switch m.Mark, true {
+            case "o": return JSON.Obj(&s, &pos)
+            case "a": return JSON.Arr(&s, &pos)
+            case "s": return JSON.Unescape(m[1])
+            case "t": return true
+            case "f": return false
+            case "n": return ""
+            default: return Number(m[2])
         }
     }
 
-    Value() {
-        switch SubStr(this.s, this.i, 1) {
-            case "{": return this.Obj()
-            case "[": return this.Arr()
-            case '"': return this.Str()
-            case "t", "f": return this.Bool()
-            case "n": return this.Null()
-            default: return this.Num()
-        }
-    }
-
-    Obj() {
-        m := Map()
-        this.i++
-        this.Ws()
-        if SubStr(this.s, this.i, 1) = "}" {
-            this.i++
-            return m
+    static Obj(&s, &pos) {
+        obj := Map()
+        if RegExMatch(s, "S)\G[ \t\n\r]*+\}", &e, pos) {
+            pos += e.Len
+            return obj
         }
         loop {
-            this.Ws()
-            key := this.Str()
-            this.Ws()
-            if SubStr(this.s, this.i, 1) != ":"
-                throw Error("JSON: expected ':' at pos " this.i)
-            this.i++
-            this.Ws()
-            m[key] := this.Value()
-            this.Ws()
-            c := SubStr(this.s, this.i, 1)
-            this.i++
-            if c = "}"
-                return m
-            if c != ","
-                throw Error("JSON: expected ',' or '}' at pos " (this.i - 1))
+            if !RegExMatch(s, 'S)\G[ \t\n\r]*+"([^"\\]*+(?:\\.[^"\\]*+)*+)"[ \t\n\r]*+:', &k, pos)
+                throw Error("JSON: expected key at pos " pos)
+            pos += k.Len
+            obj[JSON.Unescape(k[1])] := JSON.Value(&s, &pos)
+            if !RegExMatch(s, "S)\G[ \t\n\r]*+([,}])", &d, pos)
+                throw Error("JSON: expected ',' or '}' at pos " pos)
+            pos += d.Len
+            if d[1] = "}"
+                return obj
         }
     }
 
-    Arr() {
-        a := []
-        this.i++
-        this.Ws()
-        if SubStr(this.s, this.i, 1) = "]" {
-            this.i++
-            return a
+    static Arr(&s, &pos) {
+        arr := []
+        if RegExMatch(s, "S)\G[ \t\n\r]*+\]", &e, pos) {
+            pos += e.Len
+            return arr
         }
         loop {
-            this.Ws()
-            a.Push(this.Value())
-            this.Ws()
-            c := SubStr(this.s, this.i, 1)
-            this.i++
-            if c = "]"
-                return a
-            if c != ","
-                throw Error("JSON: expected ',' or ']' at pos " (this.i - 1))
+            arr.Push(JSON.Value(&s, &pos))
+            if !RegExMatch(s, "S)\G[ \t\n\r]*+([,\]])", &d, pos)
+                throw Error("JSON: expected ',' or ']' at pos " pos)
+            pos += d.Len
+            if d[1] = "]"
+                return arr
         }
     }
 
-    Str() {
-        if SubStr(this.s, this.i, 1) != '"'
-            throw Error("JSON: expected string at pos " this.i)
-        this.i++
-        out := ""
-        loop {
-            c := SubStr(this.s, this.i, 1)
-            if c = ""
-                throw Error("JSON: unterminated string")
-            this.i++
-            if c = '"'
-                return out
-            if c != "\" {
-                out .= c
-                continue
-            }
-            e := SubStr(this.s, this.i, 1)
-            this.i++
-            switch e {
-                case '"': out .= '"'
-                case "\": out .= "\"
-                case "/": out .= "/"
+    static Unescape(str) {
+        if !InStr(str, "\")
+            return str
+        out := "", i := 1
+        while j := InStr(str, "\", true, i) {
+            out .= SubStr(str, i, j - i)
+            c := SubStr(str, j + 1, 1)
+            i := j + 2
+            switch c, true {
+                case '"', "\", "/": out .= c
                 case "b": out .= Chr(8)
                 case "f": out .= Chr(12)
                 case "n": out .= "`n"
                 case "r": out .= "`r"
                 case "t": out .= "`t"
                 case "u":
-                    code := Integer("0x" SubStr(this.s, this.i, 4))
-                    this.i += 4
+                    if !RegExMatch(str, "\G[0-9a-fA-F]{4}", &h, i)
+                        throw Error("JSON: bad \u escape")
+                    code := Integer("0x" h[0]), i += 4
                     ; Combine a UTF-16 surrogate pair into one code point.
-                    if code >= 0xD800 && code <= 0xDBFF && SubStr(this.s, this.i, 2) = "\u" {
-                        lo := Integer("0x" SubStr(this.s, this.i + 2, 4))
-                        this.i += 6
-                        code := 0x10000 + ((code - 0xD800) << 10) + (lo - 0xDC00)
+                    if code >= 0xD800 && code <= 0xDBFF && RegExMatch(str, "i)\G\\u(d[c-f][0-9a-f]{2})", &lo, i) {
+                        code := 0x10000 + ((code - 0xD800) << 10) + (Integer("0x" lo[1]) - 0xDC00)
+                        i += 6
                     }
                     out .= Chr(code)
                 default:
-                    throw Error("JSON: bad escape \\" e)
+                    throw Error("JSON: bad escape \" c)
             }
         }
-    }
-
-    Bool() {
-        if SubStr(this.s, this.i, 4) = "true" {
-            this.i += 4
-            return true
-        }
-        if SubStr(this.s, this.i, 5) = "false" {
-            this.i += 5
-            return false
-        }
-        throw Error("JSON: bad literal at pos " this.i)
-    }
-
-    Null() {
-        if SubStr(this.s, this.i, 4) = "null" {
-            this.i += 4
-            return ""
-        }
-        throw Error("JSON: bad literal at pos " this.i)
-    }
-
-    Num() {
-        start := this.i
-        while this.i <= this.n && InStr("0123456789+-.eE", SubStr(this.s, this.i, 1))
-            this.i++
-        numStr := SubStr(this.s, start, this.i - start)
-        if numStr = ""
-            throw Error("JSON: unexpected char at pos " start)
-        return numStr + 0
+        return out SubStr(str, i)
     }
 }
