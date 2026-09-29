@@ -199,7 +199,8 @@ MoveWindowVisible(hwnd, x, y, w, h) {
 }
 
 ; Closes hwnd only if it still exists and belongs to an expected executable.
-SafeCloseWindow(hwnd, expectedExes) {
+; With wait false, only requests the close.
+SafeCloseWindow(hwnd, expectedExes, wait := true) {
     if !hwnd || !WinExist("ahk_id " hwnd)
         return
     exe := ""
@@ -210,7 +211,11 @@ SafeCloseWindow(hwnd, expectedExes) {
             match := true
     if !match
         return
-    try WinClose "ahk_id " hwnd, , 5
+    if wait {
+        try WinClose "ahk_id " hwnd, , 5
+    } else {
+        try WinClose "ahk_id " hwnd
+    }
 }
 
 FileUrl(path) {
@@ -267,12 +272,15 @@ LocateChrome(override := "") {
     return ""
 }
 
-; Visible, unowned top-level chrome.exe windows; preferred = the main
-; Chrome_WidgetWin_1 class. PIDs cannot identify Chromium windows because
-; the browser shares processes across windows.
-ChromeWindowCandidates() {
+; ------------------------------------------------- browser window helpers
+
+; Visible, unowned top-level windows of a Chromium browser such as
+; chrome.exe or brave.exe; preferred = the main Chrome_WidgetWin_1 class.
+; PIDs cannot identify Chromium windows because the browser shares
+; processes across windows.
+BrowserWindowCandidates(exe) {
     out := []
-    for hwnd in WinGetList("ahk_exe chrome.exe") {
+    for hwnd in WinGetList("ahk_exe " exe) {
         if DllCall("GetWindow", "ptr", hwnd, "uint", 4, "ptr")  ; GW_OWNER
             continue
         rect := Buffer(16, 0)
@@ -285,20 +293,29 @@ ChromeWindowCandidates() {
     return out
 }
 
-SnapshotChromeWindows() {
+SnapshotBrowserWindows(exe) {
     seen := Map()
-    for c in ChromeWindowCandidates()
+    for c in BrowserWindowCandidates(exe)
         seen[c.hwnd] := true
     return seen
 }
 
+; Main-class windows of exe that are not in `before`.
+NewBrowserWindows(exe, before) {
+    out := []
+    for c in BrowserWindowCandidates(exe)
+        if c.preferred && !before.Has(c.hwnd)
+            out.Push(c.hwnd)
+    return out
+}
+
 ; First candidate window that appeared after a launch, preferring the main
 ; class. 0 on timeout.
-WaitNewChromeWindow(before, timeoutMs := 15000) {
+WaitNewBrowserWindow(exe, before, timeoutMs := 15000) {
     deadline := A_TickCount + timeoutMs
     while A_TickCount < deadline {
         fallback := 0
-        for c in ChromeWindowCandidates() {
+        for c in BrowserWindowCandidates(exe) {
             if before.Has(c.hwnd)
                 continue
             if c.preferred

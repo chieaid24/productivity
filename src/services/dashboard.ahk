@@ -4,8 +4,8 @@
 ; Calendar tasks view split 50/50 on the right, plus a minimized Chrome
 ; window holding a bookmarks folder parked on the right. One monitor: the
 ; same windows on one screen, with the calendar day view and tasks view
-; split 50/50 in front of the maximized Gmail and Outlook. Brave and Chrome
-; run from dashboard-only data folders, so personal tabs never mix in.
+; split 50/50 in front of the maximized Gmail and Outlook. Cold browsers
+; start bare and their restored windows close, so old tabs never join.
 ; Teardown closes only windows the dashboard created and restores a
 ; borrowed Outlook. Open state is tracked in memory only, so a fresh
 ; process starts closed and stale window handles never linger.
@@ -158,76 +158,50 @@ MD_BraveExe() {
     throw Error("Brave not found. Set [Dashboard.Brave] Executable in config.local.ini.")
 }
 
-; New-window HWNDs are found by diffing top-level Brave windows before and
-; after launch; Chromium shares processes, so PIDs cannot identify windows.
-MD_LaunchBraveWindow(args, titleNeedle) {
-    before := SnapshotWindows("ahk_exe brave.exe")
-    Run MD_BrowserCommand(MD_BraveExe(), MD_DataDir("Brave")) " " args
-    hwnd := WaitNewWindow("ahk_exe brave.exe", before, titleNeedle)
+MD_BraveProfileArg() {
+    prof := Cfg("Dashboard.Brave", "ProfileDirectory")
+    return prof = "" ? "" : ' --profile-directory="' prof '"'
+}
+
+; Finds the new window by diffing Brave's windows, without waiting for its page.
+MD_LaunchBraveWindow(args, label) {
+    before := SnapshotBrowserWindows("brave.exe")
+    Run '"' MD_BraveExe() '"' MD_BraveProfileArg() " " args
+    hwnd := WaitNewBrowserWindow("brave.exe", before)
     if !hwnd
-        throw Error("New Brave window did not appear (" titleNeedle ").")
+        throw Error("New Brave window did not appear (" label ").")
     return hwnd
 }
 
-; ------------------------------------------------ dashboard browser data
+; -------------------------------------------------------------- cold starts
 
-; Brave and Chrome open the dashboard from their own data folders, apart
-; from personal browsing, so a cold start cannot restore personal tabs.
-MD_DataDir(browser) {
-    return EnvGet("LOCALAPPDATA") "\Productivity\Dashboard\" browser
+; A cold browser appends command-line URLs to its restored session, so start it bare.
+MD_StartBrowser(exe, profileArg) {
+    SplitPath exe, &name
+    if ProcessExist(name)
+        return {exe: name, before: 0}
+    before := SnapshotBrowserWindows(name)
+    Run '"' exe '"' profileArg
+    return {exe: name, before: before}
 }
 
-MD_BrowserCommand(exe, dataDir) {
-    return '"' exe '" --user-data-dir="' dataDir '" --no-first-run'
-        . " --no-default-browser-check --hide-crash-restore-bubble"
-}
-
-; Chromium holds <dir>\lockfile open while running and deletes it on exit.
-MD_DataDirInUse(dataDir) {
-    lock := dataDir "\lockfile"
-    if !FileExist(lock)
-        return false
-    try {
-        FileDelete lock  ; stale after a power loss
-        return false
-    }
-    return true
-}
-
-; Deletes the saved session of a stopped instance, so its next cold start
-; opens only the requested windows instead of also restoring the last
-; dashboard. A running instance opens clean new windows as it is.
-MD_PrepareDataDir(dataDir) {
-    deadline := A_TickCount + 5000  ; a just-closed dashboard may still be exiting
-    while MD_DataDirInUse(dataDir) {
-        if A_TickCount > deadline
-            return
+; Windows a bare start restored, once they stop appearing; [] if already running.
+MD_WaitRestored(start) {
+    if !start.before
+        return []
+    restored := []
+    changedAt := A_TickCount
+    deadline := A_TickCount + 20000
+    while A_TickCount < deadline {
+        now := NewBrowserWindows(start.exe, start.before)
+        if now.Length != restored.Length {
+            restored := now
+            changedAt := A_TickCount
+        } else if restored.Length && A_TickCount - changedAt >= 500
+            break
         Sleep 100
     }
-    try DirDelete dataDir "\Default\Sessions", true
-}
-
-; A new Brave profile asks before closing multi-tab windows, which blocks
-; teardown, and shows an analytics notice bar. Seeds both off once.
-MD_SeedBraveDataDir(dataDir) {
-    if FileExist(dataDir "\Local State")
-        return
-    DirCreate dataDir "\Default"
-    MD_WriteFile(dataDir "\Local State", '{"brave":{"p3a":{"enabled":false,"notice_acknowledged":true}}}')
-    MD_WriteFile(dataDir "\Default\Preferences", '{"brave":{"enable_window_closing_confirm":false}}')
-}
-
-MD_WriteFile(path, text) {
-    f := FileOpen(path, "w", "UTF-8-RAW")
-    f.Write(text)
-    f.Close()
-}
-
-MD_PrepareBrowsers() {
-    brave := MD_DataDir("Brave")
-    MD_PrepareDataDir(brave)
-    MD_SeedBraveDataDir(brave)
-    MD_PrepareDataDir(MD_DataDir("Chrome"))
+    return restored
 }
 
 ; ---------------------------------------------------------- dashboard parts
@@ -279,28 +253,36 @@ MD_FindBookmarkFolder(node, name) {
     return 0
 }
 
-; Opens the configured bookmarks folder, read from the user's chosen Chrome
-; profile, as tabs in a new window of the dashboard's Chrome, then parks it
-; maximized-then-minimized on the right monitor so restoring it lands there
-; without covering the split. Returns 0 when no folder is configured.
-MD_OpenBookmarksWindow(rightMon) {
-    profile := Cfg("Dashboard.Chrome", "ProfileDirectory", "Default")
-    folder := Cfg("Dashboard.Chrome", "BookmarkFolder")
-    if folder = ""
-        return 0
-    urls := MD_ChromeBookmarkUrls(profile, folder)
+MD_ChromeProfile() {
+    return Cfg("Dashboard.Chrome", "ProfileDirectory", "Default")
+}
+
+MD_ChromeExe() {
     chrome := LocateChrome(Cfg("Dashboard.Chrome", "Executable"))
     if chrome = ""
         throw Error("Google Chrome not found. Set [Dashboard.Chrome] Executable in config.local.ini.")
+    return chrome
+}
+
+; URLs of the configured bookmarks folder, or [] when none is configured.
+MD_BookmarkUrls() {
+    folder := Cfg("Dashboard.Chrome", "BookmarkFolder")
+    return folder = "" ? [] : MD_ChromeBookmarkUrls(MD_ChromeProfile(), folder)
+}
+
+; Opens the bookmark URLs as tabs in a new Chrome window on the user's
+; chosen profile, then parks it maximized-then-minimized on `mon` so
+; restoring it lands there without covering the split.
+MD_OpenBookmarksWindow(chrome, urls, mon) {
     args := ""
     for u in urls
         args .= ' "' u '"'
-    before := SnapshotChromeWindows()
-    Run MD_BrowserCommand(chrome, MD_DataDir("Chrome")) " --new-window" args
-    hwnd := WaitNewChromeWindow(before)
+    before := SnapshotBrowserWindows("chrome.exe")
+    Run '"' chrome '" --profile-directory="' MD_ChromeProfile() '" --new-window' args
+    hwnd := WaitNewBrowserWindow("chrome.exe", before)
     if !hwnd
         throw Error("New Chrome window did not appear.")
-    MonitorGetWorkArea(rightMon, &l, &t, &r, &b)
+    MonitorGetWorkArea(mon, &l, &t, &r, &b)
     MoveWindowTo(hwnd, l, t, r - l, b - t)
     try WinMaximize "ahk_id " hwnd
     WinMinimize "ahk_id " hwnd
@@ -309,12 +291,12 @@ MD_OpenBookmarksWindow(rightMon) {
 
 MD_OpenCalendarWindow() {
     url := Cfg("Dashboard.Calendar", "Url", "https://calendar.google.com/calendar/u/0/r/day")
-    return MD_LaunchBraveWindow('--app="' url '"', "Calendar")
+    return MD_LaunchBraveWindow('--app="' url '"', "calendar")
 }
 
 MD_OpenTasksWindow() {
     url := Cfg("Dashboard.Tasks", "Url", "https://calendar.google.com/calendar/u/0/r/tasks")
-    return MD_LaunchBraveWindow('--app="' url '"', "Tasks")
+    return MD_LaunchBraveWindow('--app="' url '"', "tasks")
 }
 
 ; Skips #32770 dialogs (reminders, error prompts) - only a real main window
@@ -350,37 +332,27 @@ MD_LaunchOutlook() {
     Run "outlook.exe"
 }
 
-; Reuses an existing Outlook main window (recording its geometry for
-; restore-on-teardown) or launches one owned by the dashboard.
-MD_AcquireOutlook(&owned, &px, &py, &pw, &ph, &pmm) {
-    owned := false
-    px := py := pw := ph := pmm := 0
-    hwnd := MD_FindOutlookMainWindow()
-    if hwnd {
-        WinGetPos &px, &py, &pw, &ph, "ahk_id " hwnd
-        pmm := WinGetMinMax("ahk_id " hwnd)
-        return hwnd
-    }
-    owned := true
+; Launches Outlook if needed without waiting, so its startup overlaps the browsers'.
+MD_StartOutlook() {
+    if hwnd := MD_FindOutlookMainWindow()
+        return {hwnd: hwnd, before: 0}
     before := SnapshotWindows("ahk_group MD_Outlook")
     MD_LaunchOutlook()
-    hwnd := WaitNewWindow("ahk_group MD_Outlook", before, "", 45000, "#32770")
-    if !hwnd
-        throw Error("Outlook window did not appear.")
-    return hwnd
+    return {hwnd: 0, before: before}
 }
 
-; Acquires Outlook and records how teardown should treat it: an owned window
-; is tracked for closing, a borrowed one is remembered for restore.
-MD_AcquireOutlookTracked() {
+; Tracks a launched Outlook for closing, or saves a borrowed one's geometry for restore.
+MD_FinishOutlook(start) {
     global MD_OutlookRestore
-    owned := false
-    px := py := pw := ph := pmm := 0
-    hwnd := MD_AcquireOutlook(&owned, &px, &py, &pw, &ph, &pmm)
-    if owned
-        MD_Track(hwnd, ["olk.exe", "OUTLOOK.EXE"])
-    else
-        MD_OutlookRestore := {hwnd: hwnd, x: px, y: py, w: pw, h: ph, mm: pmm}
+    if hwnd := start.hwnd {
+        WinGetPos &x, &y, &w, &h, "ahk_id " hwnd
+        MD_OutlookRestore := {hwnd: hwnd, x: x, y: y, w: w, h: h, mm: WinGetMinMax("ahk_id " hwnd)}
+        return hwnd
+    }
+    hwnd := WaitNewWindow("ahk_group MD_Outlook", start.before, "", 45000, "#32770")
+    if !hwnd
+        throw Error("Outlook window did not appear.")
+    MD_Track(hwnd, ["olk.exe", "OUTLOOK.EXE"])
     return hwnd
 }
 
@@ -455,12 +427,14 @@ MD_Open() {
     }
     global MD_OpenWindows := []
     global MD_OutlookRestore := 0
+    SetWinDelay 0  ; the 100 ms default after every window command adds up
+    started := A_TickCount
     try {
-        MD_PrepareBrowsers()
         if MD_PickMonitors(&leftMon, &rightMon)
             MD_BuildTwoMonitor(leftMon, rightMon)
         else
             MD_BuildOneMonitor()
+        SuiteLog("dashboard: opened in " (A_TickCount - started) " ms")
         TrayTip "Morning Dashboard opened.", "Morning Dashboard"
     } catch as err {
         MD_Teardown()
@@ -469,19 +443,41 @@ MD_Open() {
     }
 }
 
+; Starts slow apps first so startups overlap. Restored windows close last,
+; once dashboard windows keep their browser alive.
+MD_LaunchAll(bookmarkMon) {
+    outlook := MD_StartOutlook()
+    brave := MD_StartBrowser(MD_BraveExe(), MD_BraveProfileArg())
+    urls := MD_BookmarkUrls()
+    if urls.Length {
+        chromeExe := MD_ChromeExe()
+        chrome := MD_StartBrowser(chromeExe, ' --profile-directory="' MD_ChromeProfile() '"')
+    }
+    restored := MD_WaitRestored(brave)
+    w := {}
+    w.gmail := MD_OpenGmailWindow()
+    MD_Track(w.gmail, ["brave.exe"])
+    w.cal := MD_OpenCalendarWindow()
+    MD_Track(w.cal, ["brave.exe"])
+    w.tasks := MD_OpenTasksWindow()
+    MD_Track(w.tasks, ["brave.exe"])
+    if urls.Length {
+        for hwnd in MD_WaitRestored(chrome)
+            restored.Push(hwnd)
+        MD_Track(MD_OpenBookmarksWindow(chromeExe, urls, bookmarkMon), ["chrome.exe"])
+    }
+    for hwnd in restored
+        SafeCloseWindow(hwnd, ["brave.exe", "chrome.exe"], false)
+    w.outlook := MD_FinishOutlook(outlook)
+    return w
+}
+
 ; Two monitors: Gmail over Outlook on the left; calendar day view and tasks
 ; split on the right; bookmarks parked minimized on the right.
 MD_BuildTwoMonitor(leftMon, rightMon) {
-    gmail := MD_OpenGmailWindow()
-    MD_Track(gmail, ["brave.exe"])
-    cal := MD_OpenCalendarWindow()
-    MD_Track(cal, ["brave.exe"])
-    tasks := MD_OpenTasksWindow()
-    MD_Track(tasks, ["brave.exe"])
-    MD_Track(MD_OpenBookmarksWindow(rightMon), ["chrome.exe"])
-    outlook := MD_AcquireOutlookTracked()
-    MD_PositionRightMonitor(rightMon, cal, tasks)
-    MD_StackLeftMonitor(leftMon, gmail, outlook)
+    w := MD_LaunchAll(rightMon)
+    MD_PositionRightMonitor(rightMon, w.cal, w.tasks)
+    MD_StackLeftMonitor(leftMon, w.gmail, w.outlook)
 }
 
 ; One monitor: the full set on one screen. Gmail over Outlook maximized
@@ -489,24 +485,21 @@ MD_BuildTwoMonitor(leftMon, rightMon) {
 ; minimized.
 MD_BuildOneMonitor() {
     mon := MD_SingleMonitor()
-    gmail := MD_OpenGmailWindow()
-    MD_Track(gmail, ["brave.exe"])
-    cal := MD_OpenCalendarWindow()
-    MD_Track(cal, ["brave.exe"])
-    tasks := MD_OpenTasksWindow()
-    MD_Track(tasks, ["brave.exe"])
-    MD_Track(MD_OpenBookmarksWindow(mon), ["chrome.exe"])
-    outlook := MD_AcquireOutlookTracked()
-    MD_StackLeftMonitor(mon, gmail, outlook)
-    MD_SplitFront(mon, cal, tasks)
+    w := MD_LaunchAll(mon)
+    MD_StackLeftMonitor(mon, w.gmail, w.outlook)
+    MD_SplitFront(mon, w.cal, w.tasks)
 }
 
 ; Closes only tracked dashboard windows (skipping any the user already
 ; closed) and restores a borrowed Outlook. Safe when nothing is tracked.
+; All closes are requested at once, then awaited together.
 MD_Teardown() {
     global MD_OpenWindows, MD_OutlookRestore
     for w in MD_OpenWindows
-        SafeCloseWindow(w.hwnd, w.exes)
+        SafeCloseWindow(w.hwnd, w.exes, false)
+    deadline := A_TickCount + 5000
+    for w in MD_OpenWindows
+        WinWaitClose "ahk_id " w.hwnd, , Max(0.1, (deadline - A_TickCount) / 1000)
     if MD_OutlookRestore
         MD_RestoreOutlook(MD_OutlookRestore.hwnd, MD_OutlookRestore.x
             , MD_OutlookRestore.y, MD_OutlookRestore.w

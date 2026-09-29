@@ -185,9 +185,9 @@ UT_IsChromeExe(path) {
 }
 
 UT_LaunchAppWindow(chrome, url) {
-    before := SnapshotChromeWindows()
+    before := SnapshotBrowserWindows("chrome.exe")
     Run '"' chrome '" --app="' url '"'
-    hwnd := WaitNewChromeWindow(before)
+    hwnd := WaitNewBrowserWindow("chrome.exe", before)
     if !hwnd
         throw Error("Chrome opened, but its app window could not be identified.")
     return hwnd

@@ -103,6 +103,7 @@ Hotkey=^!m
 
 [Dashboard.Brave]
 Executable=$brave
+ProfileDirectory=
 
 [Dashboard.Outlook]
 Prefer=$prefer
