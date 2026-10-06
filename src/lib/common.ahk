@@ -31,6 +31,16 @@ ConfigPath() {
     return SuiteRoot "\config\config.example.ini"
 }
 
+; The editable local config, seeded from the example when missing.
+LocalConfigPath() {
+    path := ConfigPath()
+    if path != SuiteRoot "\config\config.example.ini"
+        return path
+    path := SuiteRoot "\config.local.ini"
+    try FileCopy SuiteRoot "\config\config.example.ini", path
+    return path
+}
+
 Cfg(section, key, default := "") {
     global ConfigCache, ConfigCachePath, ConfigCacheTime
     path := ConfigPath()
@@ -53,7 +63,7 @@ CfgBool(section, key, default := false) {
 ; Surgical config write: replaces the key's line inside its section (or
 ; appends it) so user comments and layout survive.
 CfgSet(section, key, value) {
-    path := SuiteRoot "\config.local.ini"
+    path := LocalConfigPath()
     content := ""
     try content := FileRead(path)
     lines := StrSplit(content, "`n", "`r")
@@ -81,11 +91,15 @@ CfgSet(section, key, value) {
             sectionEnd := out.Length
     }
     if !replaced {
-        if curSection != section {
+        if curSection = section {
+            out.InsertAt(sectionEnd + 1, key "=" value)
+        } else {
+            while out.Length && Trim(out[out.Length]) = ""
+                out.Pop()
             out.Push("")
             out.Push("[" section "]")
+            out.Push(key "=" value)
         }
-        out.Push(key "=" value)
     }
     text := ""
     for line in out

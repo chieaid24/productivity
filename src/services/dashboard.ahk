@@ -8,12 +8,21 @@
 ; start bare and their restored windows close, so old tabs never join.
 ; Teardown closes only windows the dashboard created and restores a
 ; borrowed Outlook. Open state is tracked in memory only, so a fresh
-; process starts closed and stale window handles never linger.
+; process starts closed and stale window handles never linger. Each window
+; can be turned off in Settings ([Dashboard.Windows]); the rest keep their
+; places, and a lone calendar or tasks window fills its area.
 
 global MD_Busy := false
 global MD_MenuRef := 0
 global MD_OpenWindows := []     ; [{hwnd, exes}] created this session
 global MD_OutlookRestore := 0   ; {hwnd,x,y,w,h,mm} for a borrowed Outlook
+global MD_SettingsGui := 0
+global MD_Windows := [          ; settings keys and labels, in dialog order
+    {key: "Gmail", label: "Gmail inboxes"},
+    {key: "Outlook", label: "Outlook"},
+    {key: "Calendar", label: "Google Calendar day view"},
+    {key: "Tasks", label: "Google Calendar tasks"},
+    {key: "Bookmarks", label: "Chrome bookmarks folder"}]
 
 MD_Init() {
     GroupAdd "MD_Outlook", "ahk_exe olk.exe"
@@ -52,6 +61,8 @@ MD_BuildMenu(m) {
     if !SuiteServiceEnabled("Dashboard")
         for item in ["Open dashboard", "Close dashboard", "Toggle dashboard"]
             m.Disable(item)
+    m.Add()
+    m.Add("Settings...", MD_OpenSettings)
 }
 
 MD_SetEnabled(on) {
@@ -84,6 +95,64 @@ MD_Toggle() {
         MD_Close()
     else
         MD_Open()
+}
+
+; ----------------------------------------------------------------- settings
+
+; Missing keys mean on, so existing configs open every window.
+MD_WindowOn(key) {
+    return CfgBool("Dashboard.Windows", key, true)
+}
+
+; Map of window key -> on, read once per open.
+MD_EnabledWindows() {
+    on := Map()
+    for win in MD_Windows
+        on[win.key] := MD_WindowOn(win.key)
+    return on
+}
+
+MD_OpenSettings(*) {
+    global MD_SettingsGui
+    if MD_SettingsGui {
+        try {
+            MD_SettingsGui.Show()  ; already built and open; just focus it
+            return
+        }
+        MD_SettingsGui := 0
+    }
+    g := Gui("+AlwaysOnTop -MinimizeBox", "Morning Dashboard settings")
+    g.SetFont("s10")
+    g.AddText("xm y+12 w300", "Windows to open:")
+    boxes := Map()
+    for win in MD_Windows
+        boxes[win.key] := g.AddCheckbox("xm+12 y+10" (MD_WindowOn(win.key) ? " Checked" : ""), win.label)
+    btnSave := g.AddButton("xm+140 y+20 w76 Default", "Save")
+    btnCancel := g.AddButton("x+8 yp w76", "Cancel")
+    btnSave.OnEvent("Click", (*) => MD_SaveSettings(g, boxes))
+    btnCancel.OnEvent("Click", (*) => MD_CloseSettings(g))
+    g.OnEvent("Close", (*) => MD_CloseSettings(g))
+    g.OnEvent("Escape", (*) => MD_CloseSettings(g))
+    g.Show()
+    MD_SettingsGui := g
+}
+
+MD_CloseSettings(g) {
+    global MD_SettingsGui := 0
+    try g.Destroy()
+}
+
+MD_SaveSettings(g, boxes) {
+    anyOn := false
+    for key, cb in boxes
+        anyOn := anyOn || cb.Value
+    if !anyOn {
+        MsgBox "Choose at least one window.", "Could not save settings", "Iconx Owner" g.Hwnd
+        return
+    }
+    for win in MD_Windows
+        CfgSet("Dashboard.Windows", win.key, boxes[win.key].Value ? 1 : 0)
+    MD_CloseSettings(g)
 }
 
 ; ------------------------------------------------------------ session state
@@ -376,11 +445,17 @@ MD_RestoreOutlook(hwnd, x, y, w, h, mm) {
 
 ; ------------------------------------------------------------------- layout
 
+; Calendar and tasks split 50/50; either alone is maximized. 0 = off.
 MD_PositionRightMonitor(mon, calHwnd, tasksHwnd) {
     MonitorGetWorkArea(mon, &l, &t, &r, &b)
     w := r - l, h := b - t, half := w // 2
-    MoveWindowVisible(calHwnd, l, t, half, h)
-    MoveWindowVisible(tasksHwnd, l + half, t, w - half, h)
+    if calHwnd && tasksHwnd {
+        MoveWindowVisible(calHwnd, l, t, half, h)
+        MoveWindowVisible(tasksHwnd, l + half, t, w - half, h)
+    } else if hwnd := calHwnd || tasksHwnd {
+        MoveWindowTo(hwnd, l, t, w, h)
+        WinMaximize "ahk_id " hwnd
+    }
 }
 
 ; Raises a window to the top of the z-order without moving, sizing, or
@@ -393,29 +468,35 @@ MD_RaiseWindow(hwnd) {
 }
 
 ; Calendar and tasks split 50/50, raised above the maximized windows behind
-; them, with the calendar focused. Used on a single monitor.
+; them, with the calendar (else tasks) focused. Used on a single monitor.
 MD_SplitFront(mon, calHwnd, tasksHwnd) {
     MD_PositionRightMonitor(mon, calHwnd, tasksHwnd)
     MD_RaiseWindow(tasksHwnd)
     MD_RaiseWindow(calHwnd)
-    try WinActivate "ahk_id " calHwnd
+    if hwnd := calHwnd || tasksHwnd
+        try WinActivate "ahk_id " hwnd
 }
 
 ; Both maximized on the left monitor; the Gmail Brave window on top, Outlook
 ; directly beneath so closing Brave reveals a full-monitor Outlook. Z-order
 ; is enforced with SetWindowPos because
 ; WinActivate can be blocked by foreground-lock when the user is interacting
-; with another window.
+; with another window. Either hwnd may be 0 (off).
 MD_StackLeftMonitor(mon, gmailHwnd, outlookHwnd) {
     MonitorGetWorkArea(mon, &l, &t, &r, &b)
-    MoveWindowTo(outlookHwnd, l, t, r - l, b - t)
-    WinMaximize "ahk_id " outlookHwnd
-    MoveWindowTo(gmailHwnd, l, t, r - l, b - t)
-    WinMaximize "ahk_id " gmailHwnd
-    try WinActivate "ahk_id " gmailHwnd
+    for hwnd in [outlookHwnd, gmailHwnd] {
+        if !hwnd
+            continue
+        MoveWindowTo(hwnd, l, t, r - l, b - t)
+        WinMaximize "ahk_id " hwnd
+    }
+    if !(top := gmailHwnd || outlookHwnd)
+        return
+    try WinActivate "ahk_id " top
     flags := 0x1 | 0x2 | 0x10  ; SWP_NOSIZE | SWP_NOMOVE | SWP_NOACTIVATE
-    DllCall("SetWindowPos", "ptr", gmailHwnd, "ptr", 0, "int", 0, "int", 0, "int", 0, "int", 0, "uint", flags)
-    DllCall("SetWindowPos", "ptr", outlookHwnd, "ptr", gmailHwnd, "int", 0, "int", 0, "int", 0, "int", 0, "uint", flags)
+    DllCall("SetWindowPos", "ptr", top, "ptr", 0, "int", 0, "int", 0, "int", 0, "int", 0, "uint", flags)
+    if gmailHwnd && outlookHwnd
+        DllCall("SetWindowPos", "ptr", outlookHwnd, "ptr", gmailHwnd, "int", 0, "int", 0, "int", 0, "int", 0, "uint", flags)
 }
 
 ; ------------------------------------------------------------- open / close
@@ -425,15 +506,23 @@ MD_Open() {
         TrayTip "Dashboard is already open.", "Morning Dashboard"
         return
     }
+    on := MD_EnabledWindows()
+    anyOn := false
+    for key, enabled in on
+        anyOn := anyOn || enabled
+    if !anyOn {
+        TrayTip "No dashboard windows are turned on in Settings.", "Morning Dashboard"
+        return
+    }
     global MD_OpenWindows := []
     global MD_OutlookRestore := 0
     SetWinDelay 0  ; the 100 ms default after every window command adds up
     started := A_TickCount
     try {
         if MD_PickMonitors(&leftMon, &rightMon)
-            MD_BuildTwoMonitor(leftMon, rightMon)
+            MD_BuildTwoMonitor(on, leftMon, rightMon)
         else
-            MD_BuildOneMonitor()
+            MD_BuildOneMonitor(on)
         SuiteLog("dashboard: opened in " (A_TickCount - started) " ms")
         TrayTip "Morning Dashboard opened.", "Morning Dashboard"
     } catch as err {
@@ -444,23 +533,27 @@ MD_Open() {
 }
 
 ; Starts slow apps first so startups overlap. Restored windows close last,
-; once dashboard windows keep their browser alive.
-MD_LaunchAll(bookmarkMon) {
-    outlook := MD_StartOutlook()
-    brave := MD_StartBrowser(MD_BraveExe(), MD_BraveProfileArg())
-    urls := MD_BookmarkUrls()
+; once dashboard windows keep their browser alive. Windows turned off in
+; `on` are skipped and left as 0.
+MD_LaunchAll(on, bookmarkMon) {
+    w := {gmail: 0, cal: 0, tasks: 0, outlook: 0}
+    if on["Outlook"]
+        outlook := MD_StartOutlook()
+    useBrave := on["Gmail"] || on["Calendar"] || on["Tasks"]
+    if useBrave
+        brave := MD_StartBrowser(MD_BraveExe(), MD_BraveProfileArg())
+    urls := on["Bookmarks"] ? MD_BookmarkUrls() : []
     if urls.Length {
         chromeExe := MD_ChromeExe()
         chrome := MD_StartBrowser(chromeExe, ' --profile-directory="' MD_ChromeProfile() '"')
     }
-    restored := MD_WaitRestored(brave)
-    w := {}
-    w.gmail := MD_OpenGmailWindow()
-    MD_Track(w.gmail, ["brave.exe"])
-    w.cal := MD_OpenCalendarWindow()
-    MD_Track(w.cal, ["brave.exe"])
-    w.tasks := MD_OpenTasksWindow()
-    MD_Track(w.tasks, ["brave.exe"])
+    restored := useBrave ? MD_WaitRestored(brave) : []
+    if on["Gmail"]
+        MD_Track(w.gmail := MD_OpenGmailWindow(), ["brave.exe"])
+    if on["Calendar"]
+        MD_Track(w.cal := MD_OpenCalendarWindow(), ["brave.exe"])
+    if on["Tasks"]
+        MD_Track(w.tasks := MD_OpenTasksWindow(), ["brave.exe"])
     if urls.Length {
         for hwnd in MD_WaitRestored(chrome)
             restored.Push(hwnd)
@@ -468,14 +561,15 @@ MD_LaunchAll(bookmarkMon) {
     }
     for hwnd in restored
         SafeCloseWindow(hwnd, ["brave.exe", "chrome.exe"], false)
-    w.outlook := MD_FinishOutlook(outlook)
+    if on["Outlook"]
+        w.outlook := MD_FinishOutlook(outlook)
     return w
 }
 
 ; Two monitors: Gmail over Outlook on the left; calendar day view and tasks
 ; split on the right; bookmarks parked minimized on the right.
-MD_BuildTwoMonitor(leftMon, rightMon) {
-    w := MD_LaunchAll(rightMon)
+MD_BuildTwoMonitor(on, leftMon, rightMon) {
+    w := MD_LaunchAll(on, rightMon)
     MD_PositionRightMonitor(rightMon, w.cal, w.tasks)
     MD_StackLeftMonitor(leftMon, w.gmail, w.outlook)
 }
@@ -483,9 +577,9 @@ MD_BuildTwoMonitor(leftMon, rightMon) {
 ; One monitor: the full set on one screen. Gmail over Outlook maximized
 ; behind, calendar day view and tasks split 50/50 in front, bookmarks parked
 ; minimized.
-MD_BuildOneMonitor() {
+MD_BuildOneMonitor(on) {
     mon := MD_SingleMonitor()
-    w := MD_LaunchAll(mon)
+    w := MD_LaunchAll(on, mon)
     MD_StackLeftMonitor(mon, w.gmail, w.outlook)
     MD_SplitFront(mon, w.cal, w.tasks)
 }

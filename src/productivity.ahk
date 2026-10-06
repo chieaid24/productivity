@@ -88,10 +88,7 @@ SuiteToggleService(key) {
 }
 
 SuiteOpenConfig() {
-    path := SuiteRoot "\config.local.ini"
-    if !FileExist(path)
-        try FileCopy SuiteRoot "\config\config.example.ini", path
-    try Run 'notepad.exe "' path '"'
+    try Run 'notepad.exe "' LocalConfigPath() '"'
 }
 
 ; ------------------------------------------------------------ command line
@@ -114,6 +111,7 @@ SuiteHandleArgs() {
                     case "open": MD_Guard(MD_Open)
                     case "close": MD_Guard(MD_Close)
                     case "toggle": MD_Guard(MD_Toggle)
+                    case "settings": MD_OpenSettings()
                 }
             }
         case "usage":
