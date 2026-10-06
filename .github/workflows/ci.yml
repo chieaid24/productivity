@@ -35,6 +35,7 @@ jobs:
                    scripts/install.ps1 scripts/uninstall.ps1 \
                    scripts/verify-privacy.ps1 \
                    assets/productivity-running.ico assets/productivity-paused.ico \
+                   assets/sounds/birds.mp3 \
                    .githooks/pre-commit .gitignore LICENSE README.md; do
             test -f "$f" || { echo "missing: $f" >&2; exit 1; }
           done

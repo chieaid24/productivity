@@ -10,13 +10,16 @@
 ; borrowed Outlook. Open state is tracked in memory only, so a fresh
 ; process starts closed and stale window handles never linger. Each window
 ; can be turned off in Settings ([Dashboard.Windows]); the rest keep their
-; places, and a lone calendar or tasks window fills its area.
+; places, and a lone calendar or tasks window fills its area. Bird sounds
+; ([Dashboard.Sound]) loop via MCI until the dashboard is closed.
 
 global MD_Busy := false
 global MD_MenuRef := 0
 global MD_OpenWindows := []     ; [{hwnd, exes}] created this session
 global MD_OutlookRestore := 0   ; {hwnd,x,y,w,h,mm} for a borrowed Outlook
 global MD_SettingsGui := 0
+global MD_BirdsButton := 0      ; play/stop button while settings are open
+global MD_BirdsFromOpen := false  ; birds were started by opening the dashboard
 global MD_Windows := [          ; settings keys and labels, in dialog order
     {key: "Gmail", label: "Gmail inboxes"},
     {key: "Outlook", label: "Outlook"},
@@ -90,8 +93,9 @@ MD_Guard(action) {
     finally MD_Busy := false
 }
 
+; Birds left playing after the windows were closed by hand count as open.
 MD_Toggle() {
-    if MD_Active()
+    if MD_Active() || MD_BirdsFromOpen && MD_BirdsPlaying()
         MD_Close()
     else
         MD_Open()
@@ -127,9 +131,14 @@ MD_OpenSettings(*) {
     boxes := Map()
     for win in MD_Windows
         boxes[win.key] := g.AddCheckbox("xm+12 y+10" (MD_WindowOn(win.key) ? " Checked" : ""), win.label)
+    g.AddText("xm y+20 w300", "Bird sounds:")
+    cbBirds := g.AddCheckbox("xm+12 y+10" (MD_BirdsOnOpen() ? " Checked" : ""), "Play when the dashboard opens")
+    global MD_BirdsButton := g.AddButton("xm+12 y+10 w100", "")
+    MD_BirdsButton.OnEvent("Click", (*) => MD_ToggleBirds(g))
+    MD_SyncBirdsButton()
     btnSave := g.AddButton("xm+140 y+20 w76 Default", "Save")
     btnCancel := g.AddButton("x+8 yp w76", "Cancel")
-    btnSave.OnEvent("Click", (*) => MD_SaveSettings(g, boxes))
+    btnSave.OnEvent("Click", (*) => MD_SaveSettings(g, boxes, cbBirds))
     btnCancel.OnEvent("Click", (*) => MD_CloseSettings(g))
     g.OnEvent("Close", (*) => MD_CloseSettings(g))
     g.OnEvent("Escape", (*) => MD_CloseSettings(g))
@@ -138,11 +147,11 @@ MD_OpenSettings(*) {
 }
 
 MD_CloseSettings(g) {
-    global MD_SettingsGui := 0
+    global MD_SettingsGui := 0, MD_BirdsButton := 0
     try g.Destroy()
 }
 
-MD_SaveSettings(g, boxes) {
+MD_SaveSettings(g, boxes, cbBirds) {
     anyOn := false
     for key, cb in boxes
         anyOn := anyOn || cb.Value
@@ -152,7 +161,82 @@ MD_SaveSettings(g, boxes) {
     }
     for win in MD_Windows
         CfgSet("Dashboard.Windows", win.key, boxes[win.key].Value ? 1 : 0)
+    CfgSet("Dashboard.Sound", "Enabled", cbBirds.Value ? 1 : 0)
     MD_CloseSettings(g)
+}
+
+; -------------------------------------------------------------- bird sounds
+
+MD_BirdsOnOpen() {
+    return CfgBool("Dashboard.Sound", "Enabled", true)
+}
+
+MD_BirdsFile() {
+    file := Cfg("Dashboard.Sound", "File")
+    return file != "" ? file : SuiteRoot "\assets\sounds\birds.mp3"
+}
+
+; Percent of this stream's volume, on top of the system volume.
+MD_BirdsVolume() {
+    v := Cfg("Dashboard.Sound", "Volume", "15")
+    return IsInteger(v) ? Min(100, Max(0, Integer(v))) : 15
+}
+
+; Sends an MCI command string; throws with MCI's own error text.
+MD_Mci(cmd) {
+    out := Buffer(512)
+    err := DllCall("winmm\mciSendStringW", "str", cmd, "ptr", out, "uint", 256, "ptr", 0, "uint")
+    if err {
+        msg := Buffer(512)
+        DllCall("winmm\mciGetErrorStringW", "uint", err, "ptr", msg, "uint", 256)
+        throw Error(StrGet(msg) " (" cmd ")")
+    }
+    return StrGet(out)
+}
+
+MD_BirdsPlaying() {
+    try return MD_Mci("status MD_Birds mode") = "playing"
+    return false
+}
+
+; Loops the clip from the start. mpegvideo is the MCI device with volume control.
+MD_StartBirds(fromOpen) {
+    global MD_BirdsFromOpen
+    MD_StopBirds()
+    file := MD_BirdsFile()
+    if !FileExist(file)
+        throw Error("Sound file not found: " file)
+    MD_Mci('open "' file '" type mpegvideo alias MD_Birds')
+    try {
+        MD_Mci("setaudio MD_Birds volume to " MD_BirdsVolume() * 10)
+        MD_Mci("play MD_Birds repeat")
+    } catch as err {
+        try MD_Mci("close MD_Birds")
+        throw err
+    }
+    MD_BirdsFromOpen := fromOpen
+    MD_SyncBirdsButton()
+}
+
+MD_StopBirds() {
+    global MD_BirdsFromOpen := false
+    try MD_Mci("close MD_Birds")
+    MD_SyncBirdsButton()
+}
+
+MD_ToggleBirds(owner) {
+    if MD_BirdsPlaying() {
+        MD_StopBirds()
+        return
+    }
+    try MD_StartBirds(false)
+    catch as err
+        MsgBox "Could not play bird sounds: " err.Message, "Morning Dashboard", "Iconx Owner" owner.Hwnd
+}
+
+MD_SyncBirdsButton() {
+    if MD_BirdsButton
+        try MD_BirdsButton.Text := MD_BirdsPlaying() ? "Stop birds" : "Play birds"
 }
 
 ; ------------------------------------------------------------ session state
@@ -518,13 +602,21 @@ MD_Open() {
     global MD_OutlookRestore := 0
     SetWinDelay 0  ; the 100 ms default after every window command adds up
     started := A_TickCount
+    birdsError := ""
+    if MD_BirdsOnOpen() {
+        try MD_StartBirds(true)
+        catch as err {
+            birdsError := " Bird sounds failed: " err.Message
+            SuiteLog("dashboard: bird sounds failed: " err.Message)
+        }
+    }
     try {
         if MD_PickMonitors(&leftMon, &rightMon)
             MD_BuildTwoMonitor(on, leftMon, rightMon)
         else
             MD_BuildOneMonitor(on)
         SuiteLog("dashboard: opened in " (A_TickCount - started) " ms")
-        TrayTip "Morning Dashboard opened.", "Morning Dashboard"
+        TrayTip "Morning Dashboard opened." birdsError, "Morning Dashboard"
     } catch as err {
         MD_Teardown()
         SuiteLog("dashboard: open failed: " err.Message " (" err.What ", line " err.Line ")")
@@ -585,10 +677,11 @@ MD_BuildOneMonitor(on) {
 }
 
 ; Closes only tracked dashboard windows (skipping any the user already
-; closed) and restores a borrowed Outlook. Safe when nothing is tracked.
-; All closes are requested at once, then awaited together.
+; closed), stops the birds, and restores a borrowed Outlook. Safe when
+; nothing is tracked. All closes are requested at once, then awaited together.
 MD_Teardown() {
     global MD_OpenWindows, MD_OutlookRestore
+    MD_StopBirds()
     for w in MD_OpenWindows
         SafeCloseWindow(w.hwnd, w.exes, false)
     deadline := A_TickCount + 5000
@@ -603,7 +696,7 @@ MD_Teardown() {
 }
 
 MD_Close() {
-    msg := MD_Active() ? "Morning Dashboard closed." : "Dashboard is not open."
+    msg := MD_Active() || MD_BirdsPlaying() ? "Morning Dashboard closed." : "Dashboard is not open."
     MD_Teardown()
     TrayTip msg, "Morning Dashboard"
 }
