@@ -11,7 +11,8 @@
 ; process starts closed and stale window handles never linger. Each window
 ; can be turned off in Settings ([Dashboard.Windows]); the rest keep their
 ; places, and a lone calendar or tasks window fills its area. Bird sounds
-; ([Dashboard.Sound]) loop via MCI until the dashboard is closed.
+; ([Dashboard.Sound]) start at a random spot, fade in, and loop with a
+; crossfade via MCI until the dashboard is closed.
 
 global MD_Busy := false
 global MD_MenuRef := 0
@@ -20,6 +21,10 @@ global MD_OutlookRestore := 0   ; {hwnd,x,y,w,h,mm} for a borrowed Outlook
 global MD_SettingsGui := 0
 global MD_BirdsButton := 0      ; play/stop button while settings are open
 global MD_BirdsFromOpen := false  ; birds were started by opening the dashboard
+global MD_Birds := 0            ; {len, vol, cur, start, xfade, stop} while audible
+global MD_BirdsFadeInMs := 5000
+global MD_BirdsXfadeMs := 10000  ; the clip's tail blends into its head
+global MD_BirdsFadeOutMs := 2000
 global MD_Windows := [          ; settings keys and labels, in dialog order
     {key: "Gmail", label: "Gmail inboxes"},
     {key: "Outlook", label: "Outlook"},
@@ -178,8 +183,8 @@ MD_BirdsFile() {
 
 ; Percent of this stream's volume, on top of the system volume.
 MD_BirdsVolume() {
-    v := Cfg("Dashboard.Sound", "Volume", "15")
-    return IsInteger(v) ? Min(100, Max(0, Integer(v))) : 15
+    v := Cfg("Dashboard.Sound", "Volume", "45")
+    return IsInteger(v) ? Min(100, Max(0, Integer(v))) : 45
 }
 
 ; Sends an MCI command string; throws with MCI's own error text.
@@ -194,34 +199,98 @@ MD_Mci(cmd) {
     return StrGet(out)
 }
 
+; False as soon as a fade-out starts.
 MD_BirdsPlaying() {
-    try return MD_Mci("status MD_Birds mode") = "playing"
-    return false
+    return MD_Birds && !MD_Birds.stop
 }
 
-; Loops the clip from the start. mpegvideo is the MCI device with volume control.
+; Opens the clip as two voices that take turns, so each pass's tail
+; crossfades into the next pass's head. mpegvideo is the MCI device with
+; volume control.
 MD_StartBirds(fromOpen) {
-    global MD_BirdsFromOpen
-    MD_StopBirds()
+    global MD_Birds, MD_BirdsFromOpen
+    MD_CloseBirds()
     file := MD_BirdsFile()
     if !FileExist(file)
         throw Error("Sound file not found: " file)
-    MD_Mci('open "' file '" type mpegvideo alias MD_Birds')
     try {
-        MD_Mci("setaudio MD_Birds volume to " MD_BirdsVolume() * 10)
-        MD_Mci("play MD_Birds repeat")
+        for v in [1, 2] {
+            MD_Mci('open "' file '" type mpegvideo alias MD_Birds' v)
+            MD_Mci("set MD_Birds" v " time format milliseconds")
+            MD_Mci("setaudio MD_Birds" v " volume to 0")
+        }
+        len := Integer(MD_Mci("status MD_Birds1 length"))
+        if len <= 2 * MD_BirdsXfadeMs
+            throw Error("Sound file is too short to crossfade: " file)
+        MD_Mci("play MD_Birds1 from " Random(0, len - MD_BirdsXfadeMs - MD_BirdsFadeInMs))
     } catch as err {
-        try MD_Mci("close MD_Birds")
+        MD_CloseBirds()
         throw err
     }
+    MD_Birds := {len: len, vol: MD_BirdsVolume() * 10, cur: 1, start: A_TickCount, xfade: 0, stop: 0}
     MD_BirdsFromOpen := fromOpen
+    SetTimer MD_BirdsTick, 50
+    MD_BirdsTick()
     MD_SyncBirdsButton()
 }
 
+; Fades out, then closes both voices.
 MD_StopBirds() {
     global MD_BirdsFromOpen := false
-    try MD_Mci("close MD_Birds")
+    if MD_Birds && !MD_Birds.stop
+        MD_Birds.stop := A_TickCount
     MD_SyncBirdsButton()
+}
+
+MD_CloseBirds() {
+    global MD_Birds := 0
+    SetTimer MD_BirdsTick, 0
+    for v in [1, 2]
+        try MD_Mci("close MD_Birds" v)
+}
+
+; Applies fade-in, fade-out, and crossfade gains to both voices.
+MD_BirdsTick() {
+    b := MD_Birds
+    if !b {
+        SetTimer MD_BirdsTick, 0
+        return
+    }
+    now := A_TickCount
+    gain := MD_BirdsCurve((now - b.start) / MD_BirdsFadeInMs)
+    if b.stop {
+        if now - b.stop >= MD_BirdsFadeOutMs {
+            MD_CloseBirds()
+            return
+        }
+        gain *= MD_BirdsCurve(1 - (now - b.stop) / MD_BirdsFadeOutMs)
+    }
+    try {
+        cur := "MD_Birds" b.cur, next := "MD_Birds" (3 - b.cur)
+        if !b.xfade && Integer(MD_Mci("status " cur " position")) >= b.len - MD_BirdsXfadeMs {
+            MD_Mci("play " next " from 0")
+            b.xfade := now
+        }
+        mix := b.xfade ? (now - b.xfade) / MD_BirdsXfadeMs : 0
+        if mix >= 1 {
+            MD_Mci("stop " cur)
+            b.cur := 3 - b.cur, b.xfade := 0, mix := 0
+            cur := next
+        }
+        MD_Mci("setaudio " cur " volume to " Round(b.vol * gain * MD_BirdsCurve(1 - mix)))
+        if b.xfade
+            MD_Mci("setaudio " next " volume to " Round(b.vol * gain * MD_BirdsCurve(mix)))
+    } catch as err {
+        SuiteLog("dashboard: bird sounds failed: " err.Message)
+        MD_CloseBirds()
+        MD_SyncBirdsButton()
+    }
+}
+
+; Equal-power curve: MCI volume is linear amplitude, so sin/cos pairs keep
+; loudness steady through the crossfade.
+MD_BirdsCurve(t) {
+    return Sin(Min(1, Max(0, t)) * 1.5707963267949)
 }
 
 MD_ToggleBirds(owner) {

@@ -3,3 +3,4 @@
 config.local.ini
 config/config.local.ini
 *.log
+assets/sounds/birds.wav
