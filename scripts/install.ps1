@@ -134,7 +134,7 @@ WrapMonitors=1
 [UsageTracker]
 Hotkey=^!u
 ClaudeUrl=$(if ($tracker) { $tracker.ClaudeUsageUrl } else { 'https://claude.ai/settings/usage' })
-CodexUrl=$(if ($tracker) { $tracker.CodexUsageUrl } else { 'https://chatgpt.com/codex/settings/usage' })
+CodexUrl=$(if ($tracker) { $tracker.CodexUsageUrl } else { 'https://chatgpt.com/settings/usage' })
 ChromeExecutable=$(if ($tracker -and $tracker.ChromeExecutablePath) { $tracker.ChromeExecutablePath })
 MonitorSelection=$(if ($tracker) { $monitorModes[[int]$tracker.MonitorSelection] } else { 'mouse' })
 WidthPercent=$(if ($tracker) { $tracker.WidthPercent } else { 86 })

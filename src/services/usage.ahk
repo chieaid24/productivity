@@ -98,7 +98,7 @@ UT_Open() {
             claude := UT_LaunchAppWindow(chrome, Cfg("UsageTracker", "ClaudeUrl", "https://claude.ai/settings/usage"))
             UT_Windows.Push({hwnd: claude, name: "Claude"})
             UT_ApplyStyle(claude, claudeRect, topmost)
-            codex := UT_LaunchAppWindow(chrome, Cfg("UsageTracker", "CodexUrl", "https://chatgpt.com/codex/settings/usage"))
+            codex := UT_LaunchAppWindow(chrome, Cfg("UsageTracker", "CodexUrl", "https://chatgpt.com/settings/usage"))
             UT_Windows.Push({hwnd: codex, name: "Codex"})
             UT_ApplyStyle(codex, codexRect, topmost)
             SuiteLog("usage: opened Claude and Codex usage windows")
@@ -128,7 +128,7 @@ UT_Refresh() {
 
 UT_OpenFullPages() {
     Run Cfg("UsageTracker", "ClaudeUrl", "https://claude.ai/settings/usage")
-    Run Cfg("UsageTracker", "CodexUrl", "https://chatgpt.com/codex/settings/usage")
+    Run Cfg("UsageTracker", "CodexUrl", "https://chatgpt.com/settings/usage")
 }
 
 UT_CloseCore() {
@@ -276,7 +276,7 @@ UT_OpenSettings(*) {
     g.AddText("xm y+12 w130", "Claude usage URL")
     edClaude := g.AddEdit("x+8 yp-3 w320", Cfg("UsageTracker", "ClaudeUrl", "https://claude.ai/settings/usage"))
     g.AddText("xm y+14 w130", "Codex usage URL")
-    edCodex := g.AddEdit("x+8 yp-3 w320", Cfg("UsageTracker", "CodexUrl", "https://chatgpt.com/codex/settings/usage"))
+    edCodex := g.AddEdit("x+8 yp-3 w320", Cfg("UsageTracker", "CodexUrl", "https://chatgpt.com/settings/usage"))
     g.AddText("xm y+14 w130", "Chrome path")
     edChrome := g.AddEdit("x+8 yp-3 w240", Cfg("UsageTracker", "ChromeExecutable"))
     btnBrowse := g.AddButton("x+6 yp w74", "Browse...")
